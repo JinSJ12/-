@@ -93,6 +93,12 @@ final class CaptionModel {
         queues[caption.direction]?.yield(caption.id)
     }
 
+    /// 해당 자막 바로 앞에 나온 말(원문). AI가 뜻을 이해하는 데 씁니다.
+    func context(before id: UUID, count: Int = 2) -> [String] {
+        guard let index = captions.firstIndex(where: { $0.id == id }) else { return [] }
+        return captions[..<index].suffix(count).map(\.original)
+    }
+
     /// 방금 보여준 번역문과 같은 문장인지 확인합니다. 번역 결과가 되돌아오는 것을 거를 때 씁니다.
     func isRecentTranslation(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
