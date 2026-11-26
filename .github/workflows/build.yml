@@ -15,7 +15,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
@@ -25,19 +25,36 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # AI 라이브러리의 GPU 코드(Metal)를 컴파일하는 도구
+      - name: Install Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+        continue-on-error: true
+
+      # -sdk를 지정하면 Mac에서 실행되는 매크로까지 iOS용으로 빌드되어 실패하므로 쓰지 않습니다.
       - name: Build without signing
         run: |
+          set -o pipefail
           xcodebuild \
             -project CaptionTranslator.xcodeproj \
             -scheme CaptionTranslator \
             -configuration Release \
-            -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build
+            build 2>&1 | tee xcodebuild.log
+
+      # 실패하면 오류 줄을 실행 화면의 Annotations에 보여줍니다.
+      - name: Report build errors
+        if: failure()
+        run: |
+          [ -f xcodebuild.log ] || exit 0
+          grep -E 'error:' xcodebuild.log | sort -u | head -n 10 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
 
       - name: Package IPA
         run: |

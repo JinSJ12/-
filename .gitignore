@@ -2,3 +2,4 @@
 Info.plist
 build/
 out/
+*.log

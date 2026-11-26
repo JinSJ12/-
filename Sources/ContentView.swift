@@ -11,6 +11,10 @@ struct ContentView: View {
     @State private var client = CaptionClient()
     @State private var showingSettings = false
     @State private var isFocusMode = false
+    @State private var paraphraser = AIParaphraser()
+    @State private var showingAISettings = false
+    @AppStorage("aiEnabled") private var isAIEnabled = false
+    @AppStorage("aiModel") private var aiModel = AIModel.qwen35
     @AppStorage("serverAddress") private var serverAddress = ""
     @AppStorage("serverPassword") private var serverPassword = ""
     @Environment(\.scenePhase) private var scenePhase
@@ -47,6 +51,16 @@ struct ContentView: View {
                 disconnect: { client.disconnect() }
             )
         }
+        .sheet(isPresented: $showingAISettings) {
+            AISettings(paraphraser: paraphraser, isEnabled: $isAIEnabled, model: $aiModel)
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didReceiveMemoryWarningNotification)
+        ) { _ in
+            guard isAIEnabled else { return }
+            isAIEnabled = false
+            paraphraser.stop(reason: "메모리가 부족해 AI 의역을 껐습니다")
+        }
         .translationTask(configuration) { session in
             // 언어팩이 없으면 여기서 다운로드 안내가 나타납니다.
             try? await session.prepareTranslation()
@@ -72,9 +86,11 @@ struct ContentView: View {
             // 번역이 끝나면 서브컴으로 보내, 본 PC의 수신 앱이 받을 수 있게 합니다.
             let sender = client
             model.onTranslated = { caption in sender.send(caption) }
+            connectParaphraser()
             ScreenAwake.enable()
         }
         .onChange(of: scenePhase) { _, phase in
+            paraphraser.setActive(phase == .active)
             if phase == .active {
                 ScreenAwake.enable()
             } else {
@@ -104,6 +120,26 @@ struct ContentView: View {
         .padding(.vertical, 8)
     }
 
+    private func connectParaphraser() {
+        let ai = paraphraser
+        let captions = model
+        captions.onAdded = { caption in ai.enqueue(caption) }
+        ai.onResult = { id, text, seconds in
+            captions.setRefined(id, text: text, seconds: seconds)
+        }
+
+        // 켜 둔 상태였다면 다시 불러옵니다. 불러오다 종료된 적이 있으면 반복되지 않게 끕니다.
+        guard ai.state == .off else { return }
+        let interrupted = ai.consumeInterruptedLoad()
+        guard isAIEnabled else { return }
+        if interrupted {
+            isAIEnabled = false
+            ai.stop(reason: "모델을 불러오다 앱이 종료되어 AI 의역을 껐습니다")
+        } else {
+            ai.start(aiModel)
+        }
+    }
+
     private func setFocusMode(_ enabled: Bool) {
         isFocusMode = enabled
         // 본 PC로 보내는 것은 기본 화면에서만 합니다.
@@ -119,9 +155,14 @@ struct ContentView: View {
                 Text(client.status)
                     .font(.caption)
                     .foregroundStyle(client.isConnected ? Color.green : Color.orange)
+                Text(paraphraser.statusText)
+                    .font(.caption)
+                    .foregroundStyle(paraphraser.state == .ready ? Color.green : Color.secondary)
             }
             Spacer()
             Button("연결") { showingSettings = true }
+                .buttonStyle(.bordered)
+            Button("AI") { showingAISettings = true }
                 .buttonStyle(.bordered)
             Menu {
                 Button("번역 다시 시도") {
@@ -138,8 +179,8 @@ struct ContentView: View {
 
     private func connect() {
         guard !serverAddress.isEmpty, !serverPassword.isEmpty else { return }
-        client.connect(address: serverAddress, password: serverPassword) { text, speaker in
-            model.add(text, speaker: speaker)
+        client.connect(address: serverAddress, password: serverPassword) { text, speaker, requestID in
+            model.add(text, speaker: speaker, requestID: requestID)
         }
     }
 
@@ -157,7 +198,7 @@ struct ContentView: View {
             // 자막 보기에서 돌아오면 최신 자막부터 보여줍니다.
             .onAppear { scrollToBottom(proxy) }
             .onChange(of: model.captions.last?.id) { scrollToBottom(proxy) }
-            .onChange(of: model.captions.last?.translated) { scrollToBottom(proxy) }
+            .onChange(of: model.captions.last?.best) { scrollToBottom(proxy) }
         }
     }
 
@@ -224,20 +265,30 @@ struct CaptionRow: View {
                 .font(.title3)
                 .foregroundStyle(.secondary)
 
-            if let translated = caption.translated {
-                Text(translated)
+            if let best = caption.best {
+                // 비교할 수 있도록, 의역이 있으면 애플 번역도 작게 함께 보여줍니다.
+                if caption.refined != nil, let translated = caption.translated {
+                    Text("애플: \(translated)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Text(best)
                     .font(.system(size: 28, weight: .bold))
                 // 중국어 번역문은 디스코드 채팅에 붙여 넣을 수 있게 복사 버튼을 둡니다.
                 if caption.direction == .koreanToChinese {
                     Button {
-                        UIPasteboard.general.string = translated
+                        UIPasteboard.general.string = best
                     } label: {
                         Label("중국어 복사", systemImage: "doc.on.doc")
                     }
                     .font(.caption)
                     .buttonStyle(.bordered)
                 }
-                if let seconds = caption.seconds {
+                if let seconds = caption.refinedSeconds {
+                    Text(String(format: "AI 의역 %.1f초", seconds))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let seconds = caption.seconds {
                     Text(String(format: "%.2f초", seconds))
                         .font(.caption)
                         .foregroundStyle(.secondary)

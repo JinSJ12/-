@@ -16,6 +16,8 @@ final class CaptionClient {
     /// 본 PC의 수신 앱에 전달할 번역 결과. 형식은 서버의 OVERLAY.md에 있습니다.
     private struct OverlayMessage: Encodable {
         let type: String
+        let ref: String? // 봇이 번역을 기다리는 요청 번호
+        let forward: Bool // 본 PC 수신 앱에도 전달할지 여부
         let id: String
         let speaker: String?
         let original: String
@@ -25,12 +27,13 @@ final class CaptionClient {
 
     private struct Message: Decodable {
         let type: String
+        let id: String?
         let speaker: String?
         let text: String?
         let message: String?
     }
 
-    typealias CaptionHandler = @MainActor (_ text: String, _ speaker: String?) -> Void
+    typealias CaptionHandler = @MainActor (_ text: String, _ speaker: String?, _ requestID: String?) -> Void
 
     func connect(address: String, password: String, onCaption: @escaping CaptionHandler) {
         disconnect()
@@ -60,9 +63,15 @@ final class CaptionClient {
 
     /// 번역이 끝난 자막을 서브컴으로 보냅니다. 연결되지 않았으면 보내지 않습니다.
     func send(_ caption: Caption) {
-        guard isConnected, isForwardingEnabled, let socket, let text = caption.translated else { return }
+        // 의역이 늦게 도착하면 같은 id로 한 번 더 보냅니다.
+        // 봇이 보낸 문장은 자막 보기 중에도 번역을 돌려줘야 합니다.
+        guard isConnected, isForwardingEnabled || caption.requestID != nil,
+              let socket, let text = caption.best
+        else { return }
         let message = OverlayMessage(
             type: "translation",
+            ref: caption.requestID,
+            forward: isForwardingEnabled,
             id: caption.id.uuidString,
             speaker: caption.speaker,
             original: caption.original,
@@ -96,7 +105,7 @@ final class CaptionClient {
                         isConnected = true
                         status = "서브컴에 연결됨"
                     case "caption":
-                        if let text = message.text { onCaption(text, message.speaker) }
+                        if let text = message.text { onCaption(text, message.speaker, message.id) }
                     case "error":
                         // 비밀번호 오류 등은 다시 시도하지 않습니다.
                         isConnected = false

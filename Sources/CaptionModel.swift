@@ -27,11 +27,19 @@ struct Caption: Identifiable {
     let id = UUID()
     let original: String
     var speaker: String?
+    /// 봇이 번역을 돌려받으려고 붙인 번호
+    var requestID: String?
     var translated: String?
     var failure: String?
     var seconds: Double?
+    /// 아이폰 AI의 의역과 걸린 시간
+    var refined: String?
+    var refinedSeconds: Double?
 
     var direction: TranslationDirection { TranslationDirection(of: original) }
+
+    /// 화면에 크게 보여줄 번역문. 의역이 있으면 의역을 씁니다.
+    var best: String? { refined ?? translated }
 }
 
 /// 자막 목록을 관리하고, 들어온 순서대로 번역합니다.
@@ -44,22 +52,37 @@ final class CaptionModel {
     @ObservationIgnored
     private var queues: [TranslationDirection: AsyncStream<UUID>.Continuation] = [:]
 
-    /// 번역에 성공할 때마다 호출됩니다.
+    /// 번역이나 의역에 성공할 때마다 호출됩니다.
     @ObservationIgnored
     var onTranslated: (@MainActor (Caption) -> Void)?
 
+    /// 새 문장이 들어올 때마다 호출됩니다.
+    @ObservationIgnored
+    var onAdded: (@MainActor (Caption) -> Void)?
+
     private let limit = 100
 
-    func add(_ text: String, speaker: String? = nil) {
+    func add(_ text: String, speaker: String? = nil, requestID: String? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let caption = Caption(original: trimmed, speaker: speaker)
+        let caption = Caption(original: trimmed, speaker: speaker, requestID: requestID)
         captions.append(caption)
         if captions.count > limit {
             captions.removeFirst(captions.count - limit)
         }
         queues[caption.direction]?.yield(caption.id)
+        onAdded?(caption)
+    }
+
+    func setRefined(_ id: UUID, text: String, seconds: Double) {
+        update(id) {
+            $0.refined = text
+            $0.refinedSeconds = seconds
+        }
+        if let done = captions.first(where: { $0.id == id }) {
+            onTranslated?(done)
+        }
     }
 
     func clear() {
