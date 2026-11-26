@@ -93,6 +93,12 @@ final class CaptionModel {
         queues[caption.direction]?.yield(caption.id)
     }
 
+    /// 방금 보여준 번역문과 같은 문장인지 확인합니다. 번역 결과가 되돌아오는 것을 거를 때 씁니다.
+    func isRecentTranslation(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return captions.suffix(10).contains { $0.translated == trimmed || $0.refined == trimmed }
+    }
+
     func setRefined(_ id: UUID, text: String, seconds: Double) {
         update(id) {
             $0.refined = text

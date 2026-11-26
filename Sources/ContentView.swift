@@ -188,6 +188,9 @@ struct ContentView: View {
     private func connect() {
         guard !serverAddress.isEmpty, !serverPassword.isEmpty else { return }
         client.connect(address: serverAddress, password: serverPassword) { text, speaker, requestID in
+            // 서버에서 이름 없이 온 문장이 방금 번역 결과라면, 되돌아온 것으로 보고 무시합니다.
+            // 직접 입력한 문장은 이 경로를 지나지 않아 그대로 번역합니다.
+            if speaker == nil, model.isRecentTranslation(text) { return }
             model.add(text, speaker: speaker, requestID: requestID)
         }
     }
