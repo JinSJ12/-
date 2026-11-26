@@ -1,0 +1,28 @@
+name: CaptionTranslator
+options:
+  deploymentTarget:
+    iOS: "18.0"
+targets:
+  CaptionTranslator:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: 자막번역
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.captiontranslator.app
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+schemes:
+  CaptionTranslator:
+    build:
+      targets:
+        CaptionTranslator: all

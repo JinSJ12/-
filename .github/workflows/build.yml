@@ -1,0 +1,53 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Sources/**"
+      - "project.yml"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build without signing
+        run: |
+          xcodebuild \
+            -project CaptionTranslator.xcodeproj \
+            -scheme CaptionTranslator \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        run: |
+          mkdir -p out/Payload
+          cp -R build/Build/Products/Release-iphoneos/CaptionTranslator.app out/Payload/
+          cd out
+          zip -qry CaptionTranslator-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: CaptionTranslator-ipa
+          path: out/CaptionTranslator-unsigned.ipa
+          if-no-files-found: error
