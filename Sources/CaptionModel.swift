@@ -5,13 +5,14 @@ import Translation
 struct Caption: Identifiable {
     let id = UUID()
     let original: String
+    var speaker: String?
     var translated: String?
     var failure: String?
     var seconds: Double?
 }
 
 /// 자막 목록을 관리하고, 들어온 순서대로 번역합니다.
-/// 나중에 서브컴에서 받은 문장도 add(_:)로 넣으면 됩니다.
+/// 서브컴에서 받은 문장과 직접 입력한 문장이 모두 add(_:speaker:)로 들어옵니다.
 @MainActor
 @Observable
 final class CaptionModel {
@@ -22,11 +23,11 @@ final class CaptionModel {
 
     private let limit = 100
 
-    func add(_ text: String) {
+    func add(_ text: String, speaker: String? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let caption = Caption(original: trimmed)
+        let caption = Caption(original: trimmed, speaker: speaker)
         captions.append(caption)
         if captions.count > limit {
             captions.removeFirst(captions.count - limit)

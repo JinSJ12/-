@@ -7,6 +7,10 @@ struct ContentView: View {
     @State private var input = ""
     @State private var configuration: TranslationSession.Configuration?
     @State private var languageStatus = "언어팩 확인 중"
+    @State private var client = CaptionClient()
+    @State private var showingSettings = false
+    @AppStorage("serverAddress") private var serverAddress = ""
+    @AppStorage("serverPassword") private var serverPassword = ""
     @Environment(\.scenePhase) private var scenePhase
 
     private let source = Locale.Language(identifier: "zh-Hans")
@@ -24,8 +28,19 @@ struct ContentView: View {
         VStack(spacing: 12) {
             header
             captionList
-            sampleButtons
-            inputRow
+            // 서브컴에 연결되지 않았을 때만 시험용 입력을 보여줍니다.
+            if !client.isConnected {
+                sampleButtons
+                inputRow
+            }
+        }
+        .sheet(isPresented: $showingSettings) {
+            ConnectionSettings(
+                address: $serverAddress,
+                password: $serverPassword,
+                connect: connect,
+                disconnect: { client.disconnect() }
+            )
         }
         .padding(.vertical, 8)
         .translationTask(configuration) { session in
@@ -37,6 +52,7 @@ struct ContentView: View {
         .onAppear {
             if configuration == nil {
                 configuration = .init(source: source, target: target)
+                connect() // 저장된 주소가 있으면 바로 연결합니다.
             }
             // 앱을 보고 있는 동안 화면이 꺼지지 않게 합니다.
             UIApplication.shared.isIdleTimerDisabled = true
@@ -51,12 +67,28 @@ struct ContentView: View {
             VStack(alignment: .leading) {
                 Text("중국어 → 한국어").font(.headline)
                 Text(languageStatus).font(.caption).foregroundStyle(.secondary)
+                Text(client.status)
+                    .font(.caption)
+                    .foregroundStyle(client.isConnected ? Color.green : Color.orange)
             }
             Spacer()
-            Button("다시 시도") { configuration?.invalidate() }
-            Button("지우기") { model.clear() }
+            Button("연결") { showingSettings = true }
+                .buttonStyle(.bordered)
+            Menu {
+                Button("번역 다시 시도") { configuration?.invalidate() }
+                Button("자막 지우기", role: .destructive) { model.clear() }
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.title2)
+            }
         }
         .padding(.horizontal)
+    }
+
+    private func connect() {
+        guard !serverAddress.isEmpty, !serverPassword.isEmpty else { return }
+        client.connect(address: serverAddress, password: serverPassword) { text, speaker in
+            model.add(text, speaker: speaker)
+        }
     }
 
     private var captionList: some View {
@@ -127,6 +159,12 @@ struct CaptionRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let speaker = caption.speaker {
+                Text(speaker)
+                    .font(.headline)
+                    .foregroundStyle(color(for: speaker))
+            }
+
             Text(caption.original)
                 .font(.title3)
                 .foregroundStyle(.secondary)
@@ -146,5 +184,44 @@ struct CaptionRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 같은 사람은 항상 같은 색으로 표시합니다.
+    private func color(for speaker: String) -> Color {
+        let palette: [Color] = [.cyan, .green, .orange, .pink, .yellow]
+        let sum = speaker.unicodeScalars.reduce(0) { $0 + Int($1.value) }
+        return palette[sum % palette.count]
+    }
+}
+
+struct ConnectionSettings: View {
+    @Binding var address: String
+    @Binding var password: String
+    let connect: @MainActor () -> Void
+    let disconnect: @MainActor () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("서브컴") {
+                    TextField("IP 주소 (예: 192.168.0.10)", text: $address)
+                        .keyboardType(.numbersAndPunctuation)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SecureField("앱 비밀번호", text: $password)
+                }
+                Button("연결") {
+                    connect()
+                    dismiss()
+                }
+                .disabled(address.isEmpty || password.isEmpty)
+                Button("연결 끊기", role: .destructive) {
+                    disconnect()
+                    dismiss()
+                }
+            }
+            .navigationTitle("서브컴 연결")
+        }
     }
 }

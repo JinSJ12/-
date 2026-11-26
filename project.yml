@@ -12,6 +12,9 @@ targets:
       properties:
         CFBundleDisplayName: 자막번역
         UILaunchScreen: {}
+        NSLocalNetworkUsageDescription: 같은 네트워크의 서브컴에서 자막을 받아옵니다.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

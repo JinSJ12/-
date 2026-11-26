@@ -1,0 +1,90 @@
+import Foundation
+import Observation
+
+/// 서브컴의 자막 서버에 접속해 문장을 받아옵니다. 끊기면 다시 연결합니다.
+@MainActor
+@Observable
+final class CaptionClient {
+    private(set) var status = "서브컴에 연결 안 됨"
+    private(set) var isConnected = false
+
+    @ObservationIgnored private var loop: Task<Void, Never>?
+    @ObservationIgnored private var socket: URLSessionWebSocketTask?
+
+    private struct Message: Decodable {
+        let type: String
+        let speaker: String?
+        let text: String?
+        let message: String?
+    }
+
+    typealias CaptionHandler = @MainActor (_ text: String, _ speaker: String?) -> Void
+
+    func connect(address: String, password: String, onCaption: @escaping CaptionHandler) {
+        disconnect()
+
+        var host = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !host.contains(":") { host += ":8765" }
+        guard let url = URL(string: "ws://\(host)"), url.host != nil else {
+            status = "주소 형식이 잘못되었습니다"
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue(password, forHTTPHeaderField: "X-App-Password")
+        request.timeoutInterval = 40
+
+        loop = Task { await run(request, onCaption) }
+    }
+
+    func disconnect() {
+        loop?.cancel()
+        loop = nil
+        socket?.cancel(with: .goingAway, reason: nil)
+        socket = nil
+        isConnected = false
+        status = "서브컴에 연결 안 됨"
+    }
+
+    private func run(_ request: URLRequest, _ onCaption: CaptionHandler) async {
+        while !Task.isCancelled {
+            status = "서브컴에 연결 중"
+            let current = URLSession.shared.webSocketTask(with: request)
+            socket = current
+            current.resume()
+
+            do {
+                while true {
+                    let received = try await current.receive()
+                    if Task.isCancelled { return }
+                    guard case .string(let json) = received,
+                          let message = try? JSONDecoder().decode(Message.self, from: Data(json.utf8))
+                    else { continue }
+
+                    switch message.type {
+                    case "hello":
+                        isConnected = true
+                        status = "서브컴에 연결됨"
+                    case "caption":
+                        if let text = message.text { onCaption(text, message.speaker) }
+                    case "error":
+                        // 비밀번호 오류 등은 다시 시도하지 않습니다.
+                        isConnected = false
+                        status = message.message ?? "서브컴이 연결을 거부했습니다"
+                        current.cancel(with: .normalClosure, reason: nil)
+                        return
+                    default:
+                        break
+                    }
+                }
+            } catch {
+                current.cancel(with: .goingAway, reason: nil)
+            }
+
+            if Task.isCancelled { return }
+            isConnected = false
+            status = "연결 끊김, 3초 후 다시 연결"
+            try? await Task.sleep(for: .seconds(3))
+        }
+    }
+}
