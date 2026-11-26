@@ -10,7 +10,7 @@ struct FocusCaptionView: View {
     @State var showsControls = false
     @AppStorage("focusFontSize") var fontSize = 48.0
     @AppStorage("focusShowsOriginal") var showsOriginal = false
-    @State var isHistoryExpanded = false
+    @State var isHistoryOpen = false
 
     /// 번역이 끝난 자막. 번역 중인 문장은 끝난 뒤에 올라옵니다.
     private var finished: [Caption] {
@@ -22,12 +22,21 @@ struct FocusCaptionView: View {
             Color.black.ignoresSafeArea()
 
             GeometryReader { geometry in
-                VStack(spacing: 0) {
+                ZStack(alignment: .bottom) {
                     currentCaption
                         .padding(.horizontal, 24)
+                        .padding(.bottom, 36) // 내역 손잡이 자리
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    historyPanel
-                        .frame(height: isHistoryExpanded ? geometry.size.height * 0.65 : 88)
+
+                    // 내역은 평소에 숨어 있고, 열면 자막 위를 덮으며 올라옵니다.
+                    if isHistoryOpen {
+                        historyPanel
+                            .frame(height: geometry.size.height * 0.85)
+                            .transition(.move(edge: .bottom))
+                            .zIndex(1)
+                    } else {
+                        historyHandle
+                    }
                 }
             }
         }
@@ -59,77 +68,84 @@ struct FocusCaptionView: View {
         }
     }
 
-    /// 화면 아래에 항상 보이는 지난 자막. 누르면 크게 펼치거나 접습니다.
+    private var historyHandle: some View {
+        Button {
+            setHistory(open: true)
+        } label: {
+            Label("내역", systemImage: "chevron.up")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.08), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, 4)
+    }
+
     private var historyPanel: some View {
-        // 지금 크게 보이는 최신 자막은 내역에서 뺍니다.
-        let history = Array(finished.dropLast())
-
-        return VStack(spacing: 4) {
-            Label(
-                isHistoryExpanded ? "내역 접기" : "내역 펼치기",
-                systemImage: isHistoryExpanded ? "chevron.down" : "chevron.up"
-            )
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 4) {
-                        if history.isEmpty {
-                            Text("지난 자막이 여기에 쌓입니다")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(history) { caption in
-                            historyRow(caption).id(caption.id)
-                        }
-                    }
+        VStack(spacing: 0) {
+            Button {
+                setHistory(open: false)
+            } label: {
+                Label("내역 닫기", systemImage: "chevron.down")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
-                }
-                .onAppear { scrollToLatest(proxy, in: history) }
-                .onChange(of: history.last?.id) {
-                    // 펼쳐서 읽는 중에는 화면을 마음대로 옮기지 않습니다.
-                    if !isHistoryExpanded { scrollToLatest(proxy, in: history) }
-                }
-                .onChange(of: isHistoryExpanded) {
-                    scrollToLatest(proxy, in: Array(finished.dropLast()))
-                }
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+
+            ScrollView {
+                VStack(spacing: 12) {
+                    if finished.isEmpty {
+                        Text("아직 자막이 없습니다")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(finished) { caption in
+                        historyRow(caption)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 12)
+            }
+            // 열면 최신 자막부터 보여줍니다.
+            .defaultScrollAnchor(.bottom)
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 6)
-        .frame(maxWidth: .infinity)
-        .background(Color.white.opacity(0.08))
+        .background(
+            Color(white: 0.12),
+            in: UnevenRoundedRectangle(topLeadingRadius: 16, topTrailingRadius: 16)
+        )
         .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation { isHistoryExpanded.toggle() }
-        }
+        .onTapGesture {} // 내역 창을 눌러도 메뉴가 열리지 않게 합니다.
+    }
+
+    private func setHistory(open: Bool) {
+        showsControls = false
+        withAnimation { isHistoryOpen = open }
     }
 
     private func historyRow(_ caption: Caption) -> some View {
-        VStack(spacing: 1) {
-            if showsOriginal && isHistoryExpanded {
+        VStack(spacing: 2) {
+            if showsOriginal {
                 Text(caption.original)
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 if let speaker = caption.speaker {
                     Text(speaker)
-                        .font(.caption.weight(.semibold))
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(speakerColor(speaker))
                 }
                 Text(caption.translated ?? caption.failure ?? "")
-                    .font(.subheadline)
-                    .foregroundStyle(caption.translated == nil ? Color.red : Color.white.opacity(0.75))
+                    .font(.body)
+                    .foregroundStyle(caption.translated == nil ? Color.red : Color.white)
             }
         }
         .multilineTextAlignment(.center)
-    }
-
-    private func scrollToLatest(_ proxy: ScrollViewProxy, in history: [Caption]) {
-        guard let id = history.last?.id else { return }
-        proxy.scrollTo(id, anchor: .bottom)
     }
 
     private func line(_ caption: Caption, size: Double, maxLines: Int) -> some View {
