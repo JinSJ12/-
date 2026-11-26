@@ -25,7 +25,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.11.1"
+          gradle-version: "8.13"
 
       # 빌드마다 서명 키가 바뀌면 덮어 설치가 안 되므로 같은 키를 다시 씁니다.
       - name: Keep the same debug signing key
@@ -39,14 +39,17 @@ jobs:
           set -o pipefail
           gradle -p android --no-daemon :app:assembleDebug 2>&1 | tee gradle.log
 
-      # 실패하면 오류 줄을 실행 화면의 Annotations에 보여줍니다.
+      # 실패하면 원인 전체를 알림 하나에 담아 실행 화면의 Annotations에 보여줍니다.
       - name: Report build errors
         if: failure()
         run: |
           [ -f gradle.log ] || exit 0
-          grep -E -A3 '^e: |error:|What went wrong' gradle.log | head -n 20 | while IFS= read -r line; do
-            echo "::error::$line"
-          done
+          report=$( { grep -E '^e: |error:' gradle.log | head -n 10
+                      sed -n '/What went wrong/,/\* Try:/p' gradle.log
+                    } | sed -E 's/ to match attributes \{.*\}\.?/./' | cut -c1-400 | head -c 3500 )
+          report=${report//'%'/'%25'}
+          report=${report//$'\n'/'%0A'}
+          echo "::error title=Gradle::$report"
 
       - name: Rename APK
         run: |
