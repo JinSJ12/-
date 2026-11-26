@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var showingAISettings = false
     @AppStorage("aiEnabled") private var isAIEnabled = false
     @AppStorage("aiModel") private var aiModel = AIModel.qwen35
+    @AppStorage("preferApple") private var prefersApple = false
     @AppStorage("serverAddress") private var serverAddress = ""
     @AppStorage("serverPassword") private var serverPassword = ""
     @Environment(\.scenePhase) private var scenePhase
@@ -52,8 +53,14 @@ struct ContentView: View {
             )
         }
         .sheet(isPresented: $showingAISettings) {
-            AISettings(paraphraser: paraphraser, isEnabled: $isAIEnabled, model: $aiModel)
+            AISettings(
+                paraphraser: paraphraser,
+                isEnabled: $isAIEnabled,
+                model: $aiModel,
+                prefersApple: $prefersApple
+            )
         }
+        .onChange(of: prefersApple) { _, value in model.prefersApple = value }
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.didReceiveMemoryWarningNotification)
         ) { _ in
@@ -123,7 +130,8 @@ struct ContentView: View {
     private func connectParaphraser() {
         let ai = paraphraser
         let captions = model
-        captions.onAdded = { caption in ai.enqueue(caption) }
+        captions.prefersApple = prefersApple
+        captions.onDraft = { caption in ai.enqueue(caption) }
         ai.onResult = { id, text, seconds in
             captions.setRefined(id, text: text, seconds: seconds)
         }
@@ -266,9 +274,9 @@ struct CaptionRow: View {
                 .foregroundStyle(.secondary)
 
             if let best = caption.best {
-                // 비교할 수 있도록, 의역이 있으면 애플 번역도 작게 함께 보여줍니다.
-                if caption.refined != nil, let translated = caption.translated {
-                    Text("애플: \(translated)")
+                // 비교할 수 있도록, 번역이 둘 다 있으면 하나를 작게 함께 보여줍니다.
+                if let comparison = caption.comparison {
+                    Text(comparison)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }

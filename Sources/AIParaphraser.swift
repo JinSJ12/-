@@ -9,29 +9,106 @@ import Tokenizers
 /// 아이폰 안에서 실행할 수 있는 의역 모델 후보. 용량은 처음 내려받는 크기입니다.
 enum AIModel: String, CaseIterable, Identifiable {
     case qwen35
+    case hymt8
+    case hymt4
+    case translategemma
     case qwen3
-    case gemma3n
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .qwen35: "Qwen3.5 2B (약 1.8GB)"
-        case .qwen3: "Qwen3 1.7B (약 1GB, 가벼움)"
-        case .gemma3n: "Gemma 3n E2B (약 2.6GB, 무거움)"
+        case .qwen35: "Qwen3.5 2B (약 1.7GB, 범용)"
+        case .hymt8: "Hy-MT2 1.8B 8비트 (약 1.9GB, 번역 전용)"
+        case .hymt4: "Hy-MT2 1.8B 4비트 (약 1GB, 번역 전용)"
+        case .translategemma: "TranslateGemma 4B (약 2.2GB, 번역 전용, 무거움)"
+        case .qwen3: "Qwen3 1.7B (약 1GB, 범용)"
         }
     }
 
     var configuration: ModelConfiguration {
         switch self {
         case .qwen35: LLMRegistry.qwen3_5_2b_4bit
+        case .hymt8: ModelConfiguration(id: "mlx-community/Hy-MT2-1.8B-8bit")
+        case .hymt4: ModelConfiguration(id: "mlx-community/Hy-MT2-1.8B-4bit")
+        case .translategemma: LLMRegistry.translategemma_4b_it_4bit
         case .qwen3: LLMRegistry.qwen3_1_7b_4bit
-        case .gemma3n: LLMRegistry.gemma3n_E2B_it_lm_4bit
         }
     }
 
-    /// Qwen의 "생각하기" 기능은 느려서 끕니다.
-    var disablesThinking: Bool { self != .gemma3n }
+    /// 모델마다 번역을 시키는 방법이 다릅니다. draft는 애플 번역입니다.
+    /// 요청할 수 없으면 nil.
+    func request(for text: String, draft: String?, direction: TranslationDirection) -> AIRequest? {
+        // 뜻이 바뀌지 않도록 모든 모델에서 매번 같은 답이 나오게(temperature 0) 합니다.
+        var parameters = GenerateParameters(maxTokens: 120, temperature: 0)
+
+        switch self {
+        case .qwen35, .qwen3:
+            // 작은 범용 모델은 직접 번역하면 내용을 지어내므로, 애플 번역의 말투만 다듬게 합니다.
+            guard let draft else { return nil }
+            return AIRequest(
+                instructions: Self.polishInstructions(for: direction),
+                prompt: direction == .chineseToKorean
+                    ? "원문: \(text)\n초벌: \(draft)"
+                    : "原文：\(text)\n初稿：\(draft)",
+                parameters: parameters,
+                // Qwen의 "생각하기" 기능은 느려서 끕니다.
+                context: ["enable_thinking": false]
+            )
+        case .hymt8, .hymt4:
+            // 번역 전용 모델은 별도의 지시 없이 한 메시지로 요청합니다.
+            parameters.repetitionPenalty = 1.05
+            let language = direction == .chineseToKorean ? "韩语" : "中文"
+            return AIRequest(
+                instructions: nil,
+                prompt: "将以下文本翻译成\(language)，使用朋友之间聊天的口语语气，"
+                    + "注意只需要输出翻译后的结果，不要额外解释：\n\n\(text)",
+                parameters: parameters,
+                context: nil
+            )
+        case .translategemma:
+            // 언어 코드만 받는 모델이라 말투는 지정할 수 없습니다.
+            let codes = direction == .chineseToKorean ? ("zh", "ko") : ("ko", "zh")
+            return AIRequest(
+                instructions: nil,
+                prompt: text,
+                parameters: parameters,
+                context: ["source_lang_code": codes.0, "target_lang_code": codes.1]
+            )
+        }
+    }
+
+    private static func polishInstructions(for direction: TranslationDirection) -> String {
+        switch direction {
+        case .chineseToKorean:
+            """
+            너는 번역문의 말투를 고치는 교정기야. 초벌 번역을 친구끼리 쓰는 반말로만 고쳐.
+            뜻은 절대 더하거나 빼지 마. 고칠 것이 없으면 초벌을 그대로 출력해.
+            고친 문장 한 줄만 출력해.
+            예)
+            원문: 你在做什么？
+            초벌: 당신은 무엇을 하고 있습니까?
+            답: 너 뭐 하고 있어?
+            """
+        case .koreanToChinese:
+            """
+            你是译文润色器。只把初稿改成朋友之间聊天的口语简体中文。
+            绝对不要增加或删减意思。如果初稿已经自然，就原样输出。只输出一行。
+            例）
+            原文：지금 어디에 계세요?
+            初稿：您现在在哪里？
+            答：你现在在哪儿呢？
+            """
+        }
+    }
+}
+
+/// 모델에 보낼 한 번의 번역 요청
+struct AIRequest {
+    let instructions: String?
+    let prompt: String
+    let parameters: GenerateParameters
+    let context: [String: any Sendable]?
 }
 
 /// 모델을 불러오고 문장을 생성합니다. 화면이 멈추지 않도록 별도 actor에서 실행합니다.
@@ -66,16 +143,22 @@ private actor ModelRunner {
         model = nil
     }
 
-    func generate(_ text: String, instructions: String) async throws -> String? {
-        guard let container, let model else { return nil }
+    func generate(
+        _ text: String,
+        draft: String?,
+        direction: TranslationDirection
+    ) async throws -> String? {
+        guard let container, let model,
+              let request = model.request(for: text, draft: draft, direction: direction)
+        else { return nil }
         // 문장마다 새 대화를 만들어 이전 문장이 쌓이지 않게 합니다.
         let session = ChatSession(
             container,
-            instructions: instructions,
-            generateParameters: GenerateParameters(maxTokens: 120, temperature: 0.3),
-            additionalContext: model.disablesThinking ? ["enable_thinking": false] : nil
+            instructions: request.instructions,
+            generateParameters: request.parameters,
+            additionalContext: request.context
         )
-        return try await session.respond(to: text)
+        return try await session.respond(to: request.prompt)
     }
 }
 
@@ -98,6 +181,7 @@ final class AIParaphraser {
     private struct Job {
         let id: UUID
         let text: String
+        let draft: String? // 애플 번역
         let direction: TranslationDirection
     }
 
@@ -168,7 +252,12 @@ final class AIParaphraser {
 
     func enqueue(_ caption: Caption) {
         guard state == .ready, isActive else { return }
-        jobs.append(Job(id: caption.id, text: caption.original, direction: caption.direction))
+        jobs.append(Job(
+            id: caption.id,
+            text: caption.original,
+            draft: caption.translated,
+            direction: caption.direction
+        ))
         if jobs.count > Self.maxWaiting {
             jobs.removeFirst(jobs.count - Self.maxWaiting)
         }
@@ -193,9 +282,10 @@ final class AIParaphraser {
                 let job = jobs.removeFirst()
                 let start = Date()
                 let raw = try? await runner.generate(
-                    job.text, instructions: Self.instructions(for: job.direction))
+                    job.text, draft: job.draft, direction: job.direction)
                 if Task.isCancelled { return }
-                if let raw, let result = Self.clean(raw, source: job.text, direction: job.direction) {
+                if let raw, let result = Self.clean(
+                    raw, source: job.text, draft: job.draft, direction: job.direction) {
                     onResult?(job.id, result, Date().timeIntervalSince(start))
                 }
             }
@@ -203,35 +293,28 @@ final class AIParaphraser {
         }
     }
 
-    private static func instructions(for direction: TranslationDirection) -> String {
-        switch direction {
-        case .chineseToKorean:
-            """
-            너는 게임 음성 채팅 통역사야. 중국어 문장을 한국 친구끼리 말하는 자연스러운 반말 한국어로 의역해.
-            원래의 뜻과 말투를 살려. 번역문 한 줄만 출력하고 설명은 하지 마.
-            예) 快来帮我 → 빨리 와서 도와줘
-            예) 你干嘛呢 → 너 뭐 해?
-            """
-        case .koreanToChinese:
-            """
-            你是游戏语音聊天的翻译。把韩语句子意译成中国朋友之间说话那样自然、口语化的简体中文。
-            保留原来的意思和语气。只输出一行译文，不要解释。
-            例）나 먼저 갈게 → 我先走啦
-            例）그거 완전 웃겼어 → 那个太好笑了
-            """
-        }
-    }
-
     /// 모델 출력에서 번역문만 남깁니다. 결과가 이상하면 nil.
-    static func clean(_ raw: String, source: String, direction: TranslationDirection) -> String? {
+    static func clean(
+        _ raw: String,
+        source: String,
+        draft: String?,
+        direction: TranslationDirection
+    ) -> String? {
         var text = raw
         if let end = text.range(of: "</think>") {
             text = String(text[end.upperBound...])
         }
         let lines = text.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
-        guard let first = lines.first(where: { !$0.isEmpty }) else { return nil }
+        guard var first = lines.first(where: { !$0.isEmpty }) else { return nil }
+        // 예시를 따라 붙인 머리말을 지웁니다.
+        for label in ["답:", "답：", "答：", "答:"] where first.hasPrefix(label) {
+            first = String(first.dropFirst(label.count))
+        }
         let result = first.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”「」 "))
+
+        // 애플 번역보다 훨씬 길면 내용을 덧붙인 것으로 보고 버립니다.
+        if let draft, result.count > max(draft.count * 2, draft.count + 10) { return nil }
 
         guard !result.isEmpty,
               result.count <= max(60, source.count * 5),

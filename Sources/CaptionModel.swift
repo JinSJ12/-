@@ -36,10 +36,19 @@ struct Caption: Identifiable {
     var refined: String?
     var refinedSeconds: Double?
 
+    /// 의역이 있어도 애플 번역을 크게 볼지 여부
+    var prefersApple = false
+
     var direction: TranslationDirection { TranslationDirection(of: original) }
 
-    /// 화면에 크게 보여줄 번역문. 의역이 있으면 의역을 씁니다.
-    var best: String? { refined ?? translated }
+    /// 화면에 크게 보여줄 번역문
+    var best: String? { prefersApple ? translated ?? refined : refined ?? translated }
+
+    /// 번역이 둘 다 있을 때, 비교용으로 작게 보여줄 문장
+    var comparison: String? {
+        guard let translated, let refined else { return nil }
+        return prefersApple ? "AI: \(refined)" : "애플: \(translated)"
+    }
 }
 
 /// 자막 목록을 관리하고, 들어온 순서대로 번역합니다.
@@ -56,9 +65,18 @@ final class CaptionModel {
     @ObservationIgnored
     var onTranslated: (@MainActor (Caption) -> Void)?
 
-    /// 새 문장이 들어올 때마다 호출됩니다.
+    /// 애플 번역이 끝나면(실패해도) 한 번 호출됩니다. AI 의역을 시작할 때 씁니다.
     @ObservationIgnored
-    var onAdded: (@MainActor (Caption) -> Void)?
+    var onDraft: (@MainActor (Caption) -> Void)?
+
+    /// 바꾸면 이미 있는 자막에도 바로 적용합니다.
+    var prefersApple = false {
+        didSet {
+            for index in captions.indices {
+                captions[index].prefersApple = prefersApple
+            }
+        }
+    }
 
     private let limit = 100
 
@@ -66,13 +84,13 @@ final class CaptionModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let caption = Caption(original: trimmed, speaker: speaker, requestID: requestID)
+        var caption = Caption(original: trimmed, speaker: speaker, requestID: requestID)
+        caption.prefersApple = prefersApple
         captions.append(caption)
         if captions.count > limit {
             captions.removeFirst(captions.count - limit)
         }
         queues[caption.direction]?.yield(caption.id)
-        onAdded?(caption)
     }
 
     func setRefined(_ id: UUID, text: String, seconds: Double) {
@@ -103,10 +121,15 @@ final class CaptionModel {
                 }
                 if let done = captions.first(where: { $0.id == id }) {
                     onTranslated?(done)
+                    onDraft?(done)
                 }
             } catch {
                 if Task.isCancelled { return }
                 update(id) { $0.failure = "번역 실패: \(error.localizedDescription)" }
+                // 번역 전용 AI 모델은 애플 번역 없이도 번역할 수 있습니다.
+                if let failed = captions.first(where: { $0.id == id }) {
+                    onDraft?(failed)
+                }
             }
         }
     }
