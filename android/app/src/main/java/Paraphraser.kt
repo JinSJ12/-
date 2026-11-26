@@ -20,30 +20,45 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** 태블릿 안에서 실행할 수 있는 의역 모델 후보 (Hugging Face의 litert-community). */
-/** polishesDraft가 true인 작은 모델은 직접 번역하지 않고 기본 번역의 말투만 다듬습니다. */
+/** 모델마다 번역을 시키는 방법이 다릅니다. */
+enum class AiStyle {
+    TRANSLATE, // 지시문을 주고 원문을 직접 번역
+    POLISH, // 작은 범용 모델: 직접 번역하면 내용을 지어내므로 기본 번역의 말투만 다듬기
+    TRANSLATION_ONLY, // 번역 전용 모델: 지시문 없이 한 메시지로 요청
+}
+
+/** 목록 순서와 방식은 아이폰 앱에 맞춥니다. Gemma는 안드로이드에만 있습니다. */
 enum class AiModel(
     val title: String,
     val repo: String,
     val file: String,
-    val polishesDraft: Boolean,
+    val style: AiStyle,
+    val cpuOnly: Boolean = false,
 ) {
+    QWEN35(
+        "Qwen3.5 2B (약 2.1GB, 말투 다듬기)",
+        "litert-community/Qwen3.5-2B",
+        "Qwen3.5-2B_int8.litertlm",
+        AiStyle.POLISH,
+    ),
+    HYMT(
+        "Hy-MT2 1.8B (약 1.8GB, 번역 전용, CPU)",
+        "litert-community/Hy-MT2-1.8B",
+        "Hy-MT2-1.8B_int8.litertlm",
+        AiStyle.TRANSLATION_ONLY,
+        cpuOnly = true, // 모델 설명의 휴대폰 시험에서 GPU 결과에 오류가 있었습니다.
+    ),
+    QWEN3(
+        "Qwen3 1.7B (약 1GB, 말투 다듬기)",
+        "litert-community/Qwen3-1.7B",
+        "Qwen3-1.7B_dynamic_wi4b32_afp32.litertlm",
+        AiStyle.POLISH,
+    ),
     GEMMA(
         "Gemma 4 E2B (약 2.6GB, 직접 번역)",
         "litert-community/gemma-4-E2B-it-litert-lm",
         "gemma-4-E2B-it.litertlm",
-        false,
-    ),
-    QWEN(
-        "Qwen2.5 1.5B (약 1.6GB, 말투 다듬기)",
-        "litert-community/Qwen2.5-1.5B-Instruct",
-        "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
-        true,
-    ),
-    QWEN_SMALL(
-        "Qwen3.5 0.8B (약 0.5GB, 말투 다듬기)",
-        "litert-community/Qwen3.5-0.8B",
-        "Qwen3.5-0.8B_mixed48_h1024.litertlm",
-        true,
+        AiStyle.TRANSLATE,
     );
 
     val url get() = "https://huggingface.co/$repo/resolve/main/$file"
@@ -72,7 +87,9 @@ class Paraphraser(
     private val waiting = ArrayDeque<Caption>()
 
     @Volatile private var ticket = 0 // 켜거나 끌 때마다 올려, 이전 작업을 무효로 만듭니다.
-    @Volatile private var isReady = false
+    @Volatile var isReady = false
+        private set
+
     @Volatile private var isActive = true
     @Volatile private var download: Call? = null
     private var engine: Engine? = null // 작업 스레드에서만 사용합니다.
@@ -98,7 +115,7 @@ class Paraphraser(
                 if (current != ticket) return@execute
                 report(current, "AI 모델 불러오는 중")
                 prefs.edit().putBoolean(KEY_LOADING, true).commit()
-                val (loaded, backend) = load(file)
+                val (loaded, backend) = load(file, model.cpuOnly)
                 prefs.edit().putBoolean(KEY_LOADING, false).commit()
                 if (current != ticket) {
                     loaded.close()
@@ -214,9 +231,9 @@ class Paraphraser(
     }
 
     /** GPU를 먼저 쓰고, 안 되면 CPU로 불러옵니다. */
-    private fun load(file: File): Pair<Engine, String> {
+    private fun load(file: File, cpuOnly: Boolean): Pair<Engine, String> {
         // GPU를 시도하다 앱이 종료된 적이 있으면 다시 시도하지 않습니다.
-        if (!prefs.getBoolean(KEY_GPU_TRYING, false)) {
+        if (!cpuOnly && !prefs.getBoolean(KEY_GPU_TRYING, false)) {
             prefs.edit().putBoolean(KEY_GPU_TRYING, true).commit()
             val gpu = runCatching { create(file, Backend.GPU()) }
             prefs.edit().putBoolean(KEY_GPU_TRYING, false).commit()
@@ -252,24 +269,41 @@ class Paraphraser(
         val active = engine ?: return
         val model = engineModel ?: return
         val caption = synchronized(waiting) { waiting.removeFirstOrNull() } ?: return
-        // 말투만 다듬는 모델은 기본 번역(초벌)이 있어야 합니다.
-        val draft = if (model.polishesDraft) (caption.translated ?: return) else null
-        val instructions =
-            if (draft != null) polishInstructions(caption.direction)
-            else translateInstructions(caption.direction)
-        val prompt = when {
-            draft == null -> caption.original
-            caption.direction == Direction.ZH_KO -> "원문: ${caption.original}\n초벌: $draft"
-            else -> "原文：${caption.original}\n初稿：$draft"
+        val draft = caption.translated // 기본 번역(초벌)
+        val instructions: String?
+        val prompt: String
+        when (model.style) {
+            AiStyle.TRANSLATE -> {
+                instructions = translateInstructions(caption.direction)
+                prompt = caption.original
+            }
+            AiStyle.POLISH -> {
+                // 말투만 다듬는 모델은 기본 번역(초벌)이 있어야 합니다.
+                if (draft == null) return
+                instructions = polishInstructions(caption.direction)
+                prompt = when (caption.direction) {
+                    Direction.ZH_KO -> "원문: ${caption.original}\n초벌: $draft"
+                    Direction.KO_ZH -> "原文：${caption.original}\n初稿：$draft"
+                }
+            }
+            AiStyle.TRANSLATION_ONLY -> {
+                val language = if (caption.direction == Direction.ZH_KO) "韩语" else "中文"
+                instructions = null
+                prompt = "将以下文本翻译成$language，使用朋友之间聊天的口语语气，" +
+                    "注意只需要输出翻译后的结果，不要额外解释：\n\n${caption.original}"
+            }
         }
         val started = System.currentTimeMillis()
         val raw = try {
             val config = ConversationConfig(
-                systemInstruction = Contents.of(instructions),
+                systemInstruction = instructions?.let { Contents.of(it) },
                 // 뜻이 달라지지 않도록 매번 가장 확률이 높은 말만 고릅니다.
                 samplerConfig = SamplerConfig(topK = 1, topP = 0.95, temperature = 0.0),
                 maxOutputToken = 120,
-                thinkingConfig = ThinkingConfig(enableThinking = false),
+                // "생각하기" 기능은 느려서 끕니다. 번역 전용 모델에는 해당 기능이 없습니다.
+                thinkingConfig =
+                    if (model.style == AiStyle.TRANSLATION_ONLY) null
+                    else ThinkingConfig(enableThinking = false),
             )
             // 문장마다 새 대화를 만들어 이전 문장이 쌓이지 않게 합니다.
             active.createConversation(config).use { it.sendMessage(prompt).toString() }
@@ -292,12 +326,18 @@ class Paraphraser(
         Direction.ZH_KO ->
             "너는 번역문의 말투를 고치는 교정기야. 초벌 번역을 친구끼리 쓰는 반말로만 고쳐.\n" +
                 "뜻은 절대 더하거나 빼지 마. 고칠 것이 없으면 초벌을 그대로 출력해.\n" +
+                "질문은 질문으로, 부탁은 부탁으로 유지해. 위치를 나타내는 말(在, 앞, 뒤 등)을 빠뜨리지 마.\n" +
                 "고친 문장 한 줄만 출력해.\n" +
-                "예)\n원문: 你在做什么？\n초벌: 당신은 무엇을 하고 있습니까?\n답: 너 뭐 하고 있어?"
+                "예)\n원문: 你在做什么？\n초벌: 당신은 무엇을 하고 있습니까?\n답: 너 뭐 하고 있어?\n" +
+                "예)\n원문: 敌人在后面\n초벌: 적은 뒤에 있습니다.\n답: 적 뒤에 있어.\n" +
+                "예)\n원문: 你能帮我一下吗？\n초벌: 저를 좀 도와주시겠습니까?\n답: 나 좀 도와줄래?"
         Direction.KO_ZH ->
             "你是译文润色器。只把初稿改成朋友之间聊天的口语简体中文。\n" +
-                "绝对不要增加或删减意思。如果初稿已经自然，就原样输出。只输出一行。\n" +
-                "例）\n原文：지금 어디에 계세요?\n初稿：您现在在哪里？\n答：你现在在哪儿呢？"
+                "绝对不要增加或删减意思。如果初稿已经自然，就原样输出。\n" +
+                "问句保持问句，请求保持请求。不要漏掉“在”等表示位置的词。只输出一行。\n" +
+                "例）\n原文：지금 어디에 계세요?\n初稿：您现在在哪里？\n答：你现在在哪儿呢？\n" +
+                "例）\n原文：적이 뒤에 있어요.\n初稿：敌人在后面。\n答：敌人在后面呢。\n" +
+                "例）\n原文：저를 좀 도와주실 수 있어요?\n初稿：您能帮我一下吗？\n答：能帮我一下不？"
     }
 
     private fun translateInstructions(direction: Direction) = when (direction) {

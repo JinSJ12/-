@@ -132,7 +132,7 @@ class MainActivity : Activity() {
 
     private val aiModel: AiModel
         get() = AiModel.values().firstOrNull { it.name == settings.getString("aiModel", null) }
-            ?: AiModel.GEMMA
+            ?: AiModel.QWEN35
 
     /** 켜 둔 상태였다면 다시 불러옵니다. 불러오다 종료된 적이 있으면 반복되지 않게 끕니다. */
     private fun resumeAi() {
@@ -471,6 +471,7 @@ class MainActivity : Activity() {
         serverStatusView.setTextColor(if (client.isConnected) Color.GREEN else Color.rgb(255, 159, 10))
         samples.visibility = if (client.isConnected) View.GONE else View.VISIBLE
         aiStatusView.text = paraphraser.status
+        aiStatusView.setTextColor(if (paraphraser.isReady) Color.GREEN else GRAY)
         if (isFocusMode) renderFocus() else renderList()
     }
 
@@ -488,9 +489,11 @@ class MainActivity : Activity() {
                 if (caption.direction == Direction.KO_ZH) {
                     item.addView(button("중국어 복사") { copy(best) }, WRAP, WRAP)
                 }
-                caption.refinedSeconds?.let {
-                    item.addView(label(String.format("AI 의역 %.1f초", it), 13f, GRAY))
-                }
+                val refinedSeconds = caption.refinedSeconds
+                val timing =
+                    if (refinedSeconds != null) String.format("AI 의역 %.1f초", refinedSeconds)
+                    else caption.translatedSeconds?.let { String.format("%.2f초", it) }
+                timing?.let { item.addView(label(it, 13f, GRAY)) }
             } else {
                 val failure = caption.failure
                 item.addView(label(failure ?: "번역 중…", 17f, if (failure != null) Color.RED else GRAY))

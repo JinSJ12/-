@@ -25,6 +25,7 @@ class Caption(val original: String, val speaker: String?, val requestId: String?
     val direction = Direction.of(original)
     var translated: String? = null
     var failure: String? = null
+    var translatedSeconds: Float? = null
 
     /** 태블릿 AI의 의역과 걸린 초 */
     var refined: String? = null
@@ -86,10 +87,12 @@ class DeviceTranslator {
 
     fun translate(caption: Caption, onDone: (Caption) -> Unit) {
         val translator = translator(caption.direction)
+        val started = System.currentTimeMillis()
         translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
             .onSuccessTask { _ -> translator.translate(caption.original) }
             .addOnSuccessListener { text ->
                 caption.translated = text
+                caption.translatedSeconds = (System.currentTimeMillis() - started) / 1000f
                 caption.failure = null
                 onDone(caption)
             }
