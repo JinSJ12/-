@@ -25,6 +25,13 @@ class Caption(val original: String, val speaker: String?, val requestId: String?
     val direction = Direction.of(original)
     var translated: String? = null
     var failure: String? = null
+
+    /** 태블릿 AI의 의역과 걸린 초 */
+    var refined: String? = null
+    var refinedSeconds: Float? = null
+
+    /** 화면에 크게 보여줄 번역문. 의역이 있으면 의역을 씁니다. */
+    val best: String? get() = refined ?: translated
 }
 
 /** 같은 사람은 항상 같은 색으로 표시합니다. */

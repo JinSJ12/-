@@ -38,6 +38,8 @@ class MainActivity : Activity() {
     private val captions = mutableListOf<Caption>()
     private val translator = DeviceTranslator()
     private lateinit var client: CaptionClient
+    private lateinit var paraphraser: Paraphraser
+    private lateinit var aiStatusView: TextView
     private val settings by lazy { getSharedPreferences("settings", Context.MODE_PRIVATE) }
 
     private var modelStatus = ""
@@ -76,6 +78,16 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         client = CaptionClient(onCaption = ::add, onStatus = { if (::list.isInitialized) render() })
+        paraphraser = Paraphraser(
+            applicationContext,
+            onStatus = { if (!isDestroyed) render() },
+            onResult = { caption ->
+                if (!isDestroyed) {
+                    client.send(caption, forward = !isFocusMode)
+                    render()
+                }
+            },
+        )
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         mainScreen = buildMainScreen()
         focusScreen = buildFocusScreen().apply { visibility = View.GONE }
@@ -85,13 +97,81 @@ class MainActivity : Activity() {
 
         prepareModels()
         connectSaved()
+        resumeAi()
         render()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        paraphraser.setActive(true)
+    }
+
+    override fun onStop() {
+        paraphraser.setActive(false)
+        super.onStop()
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        if (settings.getBoolean("aiEnabled", false)) {
+            settings.edit().putBoolean("aiEnabled", false).apply()
+            paraphraser.stop("메모리가 부족해 AI 의역을 껐습니다")
+        }
     }
 
     override fun onDestroy() {
         client.disconnect()
+        paraphraser.shutdown()
         translator.close()
         super.onDestroy()
+    }
+
+    // ---- AI 의역 ----
+
+    private val aiModel: AiModel
+        get() = AiModel.values().firstOrNull { it.name == settings.getString("aiModel", null) }
+            ?: AiModel.GEMMA
+
+    /** 켜 둔 상태였다면 다시 불러옵니다. 불러오다 종료된 적이 있으면 반복되지 않게 끕니다. */
+    private fun resumeAi() {
+        val interrupted = paraphraser.consumeInterruptedLoad()
+        if (!settings.getBoolean("aiEnabled", false)) return
+        if (interrupted) {
+            settings.edit().putBoolean("aiEnabled", false).apply()
+            paraphraser.stop("모델을 불러오다 앱이 종료되어 AI 의역을 껐습니다")
+        } else {
+            paraphraser.start(aiModel)
+        }
+    }
+
+    private fun showAiDialog() {
+        val builder = AlertDialog.Builder(this).setNegativeButton("닫기", null)
+        if (settings.getBoolean("aiEnabled", false)) {
+            builder.setTitle("AI 의역")
+                .setMessage("${paraphraser.status}\n\n모델을 바꾸려면 먼저 끄세요.")
+                .setPositiveButton("끄기") { _, _ ->
+                    settings.edit().putBoolean("aiEnabled", false).apply()
+                    paraphraser.stop()
+                }
+                .setNeutralButton("다시 불러오기") { _, _ -> paraphraser.start(aiModel) }
+        } else {
+            var selected = aiModel.ordinal
+            // 목록과 설명을 함께 보여줄 수 없어, 안내는 제목에 짧게 적습니다.
+            builder.setTitle("AI 모델 (Wi-Fi 권장, 받는 동안 앱을 열어 두세요)")
+                .setSingleChoiceItems(
+                    AiModel.values().map { it.title }.toTypedArray(),
+                    selected,
+                ) { _, which -> selected = which }
+                .setPositiveButton("내려받고 켜기") { _, _ ->
+                    val model = AiModel.values()[selected]
+                    settings.edit()
+                        .putString("aiModel", model.name)
+                        .putBoolean("aiEnabled", true)
+                        .apply()
+                    paraphraser.start(model)
+                }
+        }
+        builder.show()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -121,6 +201,7 @@ class MainActivity : Activity() {
         while (captions.size > LIMIT) captions.removeAt(0)
         render()
         translate(caption)
+        paraphraser.enqueue(caption)
     }
 
     private fun translate(caption: Caption) {
@@ -178,10 +259,13 @@ class MainActivity : Activity() {
         titles.addView(label("중국어 ↔ 한국어", 20f, bold = true))
         modelStatusView = label("", 13f, GRAY)
         serverStatusView = label("", 13f, GRAY)
+        aiStatusView = label("", 13f, GRAY)
         titles.addView(modelStatusView)
         titles.addView(serverStatusView)
+        titles.addView(aiStatusView)
         header.addView(titles, LinearLayout.LayoutParams(0, WRAP, 1f))
         header.addView(button("연결") { showConnectionDialog() })
+        header.addView(button("AI") { showAiDialog() })
         header.addView(button("다시 시도") {
             prepareModels()
             captions.filter { it.translated == null }.forEach { translate(it) }
@@ -362,6 +446,7 @@ class MainActivity : Activity() {
         serverStatusView.text = client.status
         serverStatusView.setTextColor(if (client.isConnected) Color.GREEN else Color.rgb(255, 159, 10))
         samples.visibility = if (client.isConnected) View.GONE else View.VISIBLE
+        aiStatusView.text = paraphraser.status
         if (isFocusMode) renderFocus() else renderList()
     }
 
@@ -371,11 +456,19 @@ class MainActivity : Activity() {
             val item = column().apply { setPadding(0, dp(10), 0, dp(10)) }
             caption.speaker?.let { item.addView(label(it, 15f, speakerColor(it), bold = true)) }
             item.addView(label(caption.original, 17f, GRAY))
-            val translated = caption.translated
-            if (translated != null) {
-                item.addView(label(translated, 28f, bold = true))
+            val best = caption.best
+            if (best != null) {
+                // 비교할 수 있도록, 의역이 있으면 기본 번역도 작게 함께 보여줍니다.
+                val translated = caption.translated
+                if (caption.refined != null && translated != null) {
+                    item.addView(label("기본 번역: $translated", 15f, GRAY))
+                }
+                item.addView(label(best, 28f, bold = true))
                 if (caption.direction == Direction.KO_ZH) {
-                    item.addView(button("중국어 복사") { copy(translated) }, WRAP, WRAP)
+                    item.addView(button("중국어 복사") { copy(best) }, WRAP, WRAP)
+                }
+                caption.refinedSeconds?.let {
+                    item.addView(label(String.format("AI 의역 %.1f초", it), 13f, GRAY))
                 }
             } else {
                 val failure = caption.failure
@@ -388,7 +481,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderFocus() {
-        val finished = captions.filter { it.translated != null || it.failure != null }
+        val finished = captions.filter { it.best != null || it.failure != null }
         focusStatus.text = if (client.isConnected) "" else client.status
         originalButton.text = if (showsOriginal) "원문 숨기기" else "원문 보기"
 
@@ -403,7 +496,7 @@ class MainActivity : Activity() {
             if (showsOriginal) {
                 currentCaption.addView(centered(latest.original, fontSize * 0.5f, GRAY).apply { maxLines = 2 })
             }
-            val translated = latest.translated
+            val translated = latest.best
             currentCaption.addView(
                 centered(
                     translated ?: latest.failure.orEmpty(),
@@ -425,7 +518,7 @@ class MainActivity : Activity() {
             val item = column().apply { setPadding(0, dp(8), 0, dp(8)) }
             if (showsOriginal) item.addView(centered(caption.original, 15f, GRAY))
             caption.speaker?.let { item.addView(centered(it, 14f, speakerColor(it), true)) }
-            val translated = caption.translated
+            val translated = caption.best
             item.addView(
                 centered(
                     translated ?: caption.failure.orEmpty(),

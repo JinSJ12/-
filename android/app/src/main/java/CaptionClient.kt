@@ -54,7 +54,8 @@ class CaptionClient(
      * 봇이 보낸 문장은 자막 보기 중에도 번역을 돌려줍니다.
      */
     fun send(caption: Caption, forward: Boolean) {
-        val text = caption.translated ?: return
+        // 의역이 늦게 끝나면 같은 id로 한 번 더 보냅니다.
+        val text = caption.best ?: return
         if (!isConnected || (!forward && caption.requestId == null)) return
         val message = JSONObject()
             .put("type", "translation")

@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -21,10 +23,14 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
+}
+
+kotlin {
+    compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
 }
 
 dependencies {
     implementation("com.google.mlkit:translate:17.0.3") // 기기 내 번역
-    implementation("com.squareup.okhttp3:okhttp:4.12.0") // 서브컴 연결(WebSocket)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0") // 서브컴 연결(WebSocket)과 모델 내려받기
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.20.0") // 기기 내 AI 의역
 }
