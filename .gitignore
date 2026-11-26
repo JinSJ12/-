@@ -2,6 +2,7 @@
 Info.plist
 build/
 out/
+*.log
 android/.gradle/
 android/app/build/
 android/build/

@@ -14,7 +14,7 @@ struct FocusCaptionView: View {
 
     /// 번역이 끝난 자막. 번역 중인 문장은 끝난 뒤에 올라옵니다.
     private var finished: [Caption] {
-        captions.filter { $0.translated != nil || $0.failure != nil }
+        captions.filter { $0.best != nil || $0.failure != nil }
     }
 
     var body: some View {
@@ -138,9 +138,9 @@ struct FocusCaptionView: View {
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(speakerColor(speaker))
                 }
-                Text(caption.translated ?? caption.failure ?? "")
+                Text(caption.best ?? caption.failure ?? "")
                     .font(.body)
-                    .foregroundStyle(caption.translated == nil ? Color.red : Color.white)
+                    .foregroundStyle(caption.best == nil ? Color.red : Color.white)
             }
         }
         .multilineTextAlignment(.center)
@@ -160,9 +160,9 @@ struct FocusCaptionView: View {
                     .lineLimit(2)
                     .minimumScaleFactor(0.5)
             }
-            Text(caption.translated ?? caption.failure ?? "")
+            Text(caption.best ?? caption.failure ?? "")
                 .font(.system(size: size, weight: .bold))
-                .foregroundStyle(caption.translated == nil ? Color.red : Color.white)
+                .foregroundStyle(caption.best == nil ? Color.red : Color.white)
                 .lineLimit(maxLines)
                 .minimumScaleFactor(0.4)
         }
