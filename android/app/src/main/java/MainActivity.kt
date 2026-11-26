@@ -16,6 +16,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -77,7 +78,8 @@ class MainActivity : Activity() {
         // 앱을 보고 있는 동안 화면이 꺼지지 않게 합니다.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        client = CaptionClient(onCaption = ::add, onStatus = { if (::list.isInitialized) render() })
+        Caption.prefersBasic = settings.getBoolean("preferBasic", false)
+        client = CaptionClient(onCaption = ::receive, onStatus = { if (::list.isInitialized) render() })
         paraphraser = Paraphraser(
             applicationContext,
             onStatus = { if (!isDestroyed) render() },
@@ -145,7 +147,20 @@ class MainActivity : Activity() {
     }
 
     private fun showAiDialog() {
-        val builder = AlertDialog.Builder(this).setNegativeButton("닫기", null)
+        // AI가 뜻을 바꾸는 경우를 대비해, 어느 번역을 크게 볼지 고릅니다.
+        val preferBasic = CheckBox(this).apply {
+            text = "기본 번역을 크게 보기 (AI 의역은 작게)"
+            isChecked = Caption.prefersBasic
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setOnCheckedChangeListener { _, checked ->
+                Caption.prefersBasic = checked
+                settings.edit().putBoolean("preferBasic", checked).apply()
+                render()
+            }
+        }
+        val builder = AlertDialog.Builder(this)
+            .setNegativeButton("닫기", null)
+            .setView(preferBasic)
         if (settings.getBoolean("aiEnabled", false)) {
             builder.setTitle("AI 의역")
                 .setMessage("${paraphraser.status}\n\n모델을 바꾸려면 먼저 끄세요.")
@@ -193,6 +208,14 @@ class MainActivity : Activity() {
 
     // ---- 자막 처리 ----
 
+    /** 서버에서 온 문장. 방금 만든 번역문이 이름 없이 되돌아온 것이면 무시합니다. */
+    private fun receive(text: String, speaker: String?, requestId: String?) {
+        val trimmed = text.trim()
+        val echoed = speaker.isNullOrBlank() &&
+            captions.takeLast(10).any { it.translated?.trim() == trimmed || it.refined == trimmed }
+        if (!echoed) add(trimmed, speaker, requestId)
+    }
+
     private fun add(text: String, speaker: String? = null, requestId: String? = null) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
@@ -201,7 +224,6 @@ class MainActivity : Activity() {
         while (captions.size > LIMIT) captions.removeAt(0)
         render()
         translate(caption)
-        paraphraser.enqueue(caption)
     }
 
     private fun translate(caption: Caption) {
@@ -210,6 +232,8 @@ class MainActivity : Activity() {
             // 본 PC로 전달하는 것은 기본 화면에서만 합니다.
             client.send(done, forward = !isFocusMode)
             render()
+            // 의역은 기본 번역이 끝난 뒤(실패해도) 시작합니다.
+            if (done.refined == null) paraphraser.enqueue(done)
         }
     }
 
@@ -458,11 +482,8 @@ class MainActivity : Activity() {
             item.addView(label(caption.original, 17f, GRAY))
             val best = caption.best
             if (best != null) {
-                // 비교할 수 있도록, 의역이 있으면 기본 번역도 작게 함께 보여줍니다.
-                val translated = caption.translated
-                if (caption.refined != null && translated != null) {
-                    item.addView(label("기본 번역: $translated", 15f, GRAY))
-                }
+                // 비교할 수 있도록, 번역이 둘 다 있으면 하나를 작게 함께 보여줍니다.
+                caption.comparison?.let { item.addView(label(it, 15f, GRAY)) }
                 item.addView(label(best, 28f, bold = true))
                 if (caption.direction == Direction.KO_ZH) {
                     item.addView(button("중국어 복사") { copy(best) }, WRAP, WRAP)

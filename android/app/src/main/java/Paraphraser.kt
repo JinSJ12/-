@@ -20,21 +20,30 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** 태블릿 안에서 실행할 수 있는 의역 모델 후보 (Hugging Face의 litert-community). */
-enum class AiModel(val title: String, val repo: String, val file: String) {
+/** polishesDraft가 true인 작은 모델은 직접 번역하지 않고 기본 번역의 말투만 다듬습니다. */
+enum class AiModel(
+    val title: String,
+    val repo: String,
+    val file: String,
+    val polishesDraft: Boolean,
+) {
     GEMMA(
-        "Gemma 4 E2B (약 2.6GB, 품질 우선)",
+        "Gemma 4 E2B (약 2.6GB, 직접 번역)",
         "litert-community/gemma-4-E2B-it-litert-lm",
         "gemma-4-E2B-it.litertlm",
+        false,
     ),
     QWEN(
-        "Qwen2.5 1.5B (약 1.6GB)",
+        "Qwen2.5 1.5B (약 1.6GB, 말투 다듬기)",
         "litert-community/Qwen2.5-1.5B-Instruct",
         "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
+        true,
     ),
     QWEN_SMALL(
-        "Qwen3.5 0.8B (약 0.5GB, 가벼움)",
+        "Qwen3.5 0.8B (약 0.5GB, 말투 다듬기)",
         "litert-community/Qwen3.5-0.8B",
         "Qwen3.5-0.8B_mixed48_h1024.litertlm",
+        true,
     );
 
     val url get() = "https://huggingface.co/$repo/resolve/main/$file"
@@ -67,6 +76,7 @@ class Paraphraser(
     @Volatile private var isActive = true
     @Volatile private var download: Call? = null
     private var engine: Engine? = null // 작업 스레드에서만 사용합니다.
+    private var engineModel: AiModel? = null // 작업 스레드에서만 사용합니다.
 
     /** 모델을 불러오다 앱이 종료된 적이 있으면 true. 확인한 뒤에는 기록을 지웁니다. */
     fun consumeInterruptedLoad(): Boolean {
@@ -95,6 +105,7 @@ class Paraphraser(
                     return@execute
                 }
                 engine = loaded
+                engineModel = model
                 isReady = true
                 report(current, "AI 의역 켜짐 ($backend)")
             } catch (e: Throwable) {
@@ -239,22 +250,34 @@ class Paraphraser(
     private fun paraphraseNext(current: Int) {
         if (current != ticket || !isActive) return
         val active = engine ?: return
+        val model = engineModel ?: return
         val caption = synchronized(waiting) { waiting.removeFirstOrNull() } ?: return
+        // 말투만 다듬는 모델은 기본 번역(초벌)이 있어야 합니다.
+        val draft = if (model.polishesDraft) (caption.translated ?: return) else null
+        val instructions =
+            if (draft != null) polishInstructions(caption.direction)
+            else translateInstructions(caption.direction)
+        val prompt = when {
+            draft == null -> caption.original
+            caption.direction == Direction.ZH_KO -> "원문: ${caption.original}\n초벌: $draft"
+            else -> "原文：${caption.original}\n初稿：$draft"
+        }
         val started = System.currentTimeMillis()
         val raw = try {
             val config = ConversationConfig(
-                systemInstruction = Contents.of(instructions(caption.direction)),
-                samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.3),
+                systemInstruction = Contents.of(instructions),
+                // 뜻이 달라지지 않도록 매번 가장 확률이 높은 말만 고릅니다.
+                samplerConfig = SamplerConfig(topK = 1, topP = 0.95, temperature = 0.0),
                 maxOutputToken = 120,
                 thinkingConfig = ThinkingConfig(enableThinking = false),
             )
             // 문장마다 새 대화를 만들어 이전 문장이 쌓이지 않게 합니다.
-            active.createConversation(config).use { it.sendMessage(caption.original).toString() }
+            active.createConversation(config).use { it.sendMessage(prompt).toString() }
         } catch (e: Throwable) {
             report(current, "의역 실패: ${e.message}")
             return
         }
-        val result = clean(raw, caption.original, caption.direction) ?: return
+        val result = clean(raw, caption.original, draft, caption.direction) ?: return
         val seconds = (System.currentTimeMillis() - started) / 1000f
         main.post {
             if (current != ticket) return@post
@@ -264,28 +287,49 @@ class Paraphraser(
         }
     }
 
-    private fun instructions(direction: Direction) = when (direction) {
+    /** 초벌 번역의 말투만 고치게 하는 지시 (아이폰 앱과 같은 방식) */
+    private fun polishInstructions(direction: Direction) = when (direction) {
         Direction.ZH_KO ->
-            "너는 게임 음성 채팅 통역사야. 중국어 문장을 한국 친구끼리 말하는 자연스러운 반말 한국어로 의역해.\n" +
-                "원래의 뜻과 말투를 살려. 번역문 한 줄만 출력하고 설명은 하지 마.\n" +
-                "예) 快来帮我 → 빨리 와서 도와줘\n" +
-                "예) 你干嘛呢 → 너 뭐 해?"
+            "너는 번역문의 말투를 고치는 교정기야. 초벌 번역을 친구끼리 쓰는 반말로만 고쳐.\n" +
+                "뜻은 절대 더하거나 빼지 마. 고칠 것이 없으면 초벌을 그대로 출력해.\n" +
+                "고친 문장 한 줄만 출력해.\n" +
+                "예)\n원문: 你在做什么？\n초벌: 당신은 무엇을 하고 있습니까?\n답: 너 뭐 하고 있어?"
         Direction.KO_ZH ->
-            "你是游戏语音聊天的翻译。把韩语句子意译成中国朋友之间说话那样自然、口语化的简体中文。\n" +
-                "保留原来的意思和语气。只输出一行译文，不要解释。\n" +
-                "例）나 먼저 갈게 → 我先走啦\n" +
-                "例）그거 완전 웃겼어 → 那个太好笑了"
+            "你是译文润色器。只把初稿改成朋友之间聊天的口语简体中文。\n" +
+                "绝对不要增加或删减意思。如果初稿已经自然，就原样输出。只输出一行。\n" +
+                "例）\n原文：지금 어디에 계세요?\n初稿：您现在在哪里？\n答：你现在在哪儿呢？"
+    }
+
+    private fun translateInstructions(direction: Direction) = when (direction) {
+        Direction.ZH_KO ->
+            "너는 게임 음성 채팅 통역사야. 중국어 문장을 자연스러운 반말 한국어로 번역해.\n" +
+                "뜻은 원문과 똑같아야 해. 내용을 더하거나 빼거나 바꾸지 마. 질문은 질문으로, 명령은 명령으로 옮겨.\n" +
+                "뜻이 확실하지 않으면 직역에 가깝게 옮겨. 번역문 한 줄만 출력해.\n" +
+                "예) 快来帮我 → 빨리 와서 도와줘\n" +
+                "예) 你听得到我说话吗？ → 내 말 들려?\n" +
+                "예) 我没看到他 → 나 걔 못 봤어"
+        Direction.KO_ZH ->
+            "你是游戏语音聊天的翻译。把韩语句子翻译成自然、口语化的简体中文。\n" +
+                "意思必须和原文完全一致，不要增加、删减或改变内容。疑问句仍译成疑问句，命令仍译成命令。\n" +
+                "原文含义不清楚时尽量直译。中文语法要完整，不要漏掉“在”这样的词。只输出一行译文。\n" +
+                "例）나 뒤에 있어 → 我在后面呢\n" +
+                "例）내 목소리 들려? → 听得到我说话吗？\n" +
+                "例）걔 못 봤어 → 我没看到他"
     }
 
     /** 모델 출력에서 번역문만 남깁니다. 결과가 이상하면 null. */
-    private fun clean(raw: String, source: String, direction: Direction): String? {
-        val line = raw.substringAfter("</think>")
+    private fun clean(raw: String, source: String, draft: String?, direction: Direction): String? {
+        var line = raw.substringAfter("</think>")
             .lineSequence()
             .map { it.trim() }
             .firstOrNull { it.isNotEmpty() }
             ?: return null
+        // 예시를 따라 붙인 머리말을 지웁니다.
+        listOf("답:", "답：", "答：", "答:").forEach { line = line.removePrefix(it) }
         val result = line.trim('"', '\'', '“', '”', '「', '」', ' ')
         if (result.isEmpty() || result.length > maxOf(60, source.length * 5)) return null
+        // 초벌보다 훨씬 길면 내용을 덧붙인 것으로 보고 버립니다.
+        if (draft != null && result.length > maxOf(draft.length * 2, draft.length + 10)) return null
         if (result.contains("<think>") || result.contains("→")) return null
 
         val hasHangul = Direction.of(result) == Direction.KO_ZH

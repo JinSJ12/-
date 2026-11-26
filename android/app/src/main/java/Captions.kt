@@ -30,8 +30,22 @@ class Caption(val original: String, val speaker: String?, val requestId: String?
     var refined: String? = null
     var refinedSeconds: Float? = null
 
-    /** 화면에 크게 보여줄 번역문. 의역이 있으면 의역을 씁니다. */
-    val best: String? get() = refined ?: translated
+    /** 화면에 크게 보여줄 번역문 */
+    val best: String?
+        get() = if (prefersBasic) translated ?: refined else refined ?: translated
+
+    /** 번역이 둘 다 있을 때, 비교용으로 작게 보여줄 문장 */
+    val comparison: String?
+        get() {
+            val basic = translated ?: return null
+            val ai = refined ?: return null
+            return if (prefersBasic) "AI: $ai" else "기본 번역: $basic"
+        }
+
+    companion object {
+        /** 의역이 있어도 기본 번역을 크게 볼지 여부 */
+        var prefersBasic = false
+    }
 }
 
 /** 같은 사람은 항상 같은 색으로 표시합니다. */
