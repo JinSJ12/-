@@ -10,6 +10,18 @@ final class CaptionClient {
 
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var socket: URLSessionWebSocketTask?
+    /// 번역 결과를 서브컴으로 보낼지 여부. 자막 보기 모드에서는 끕니다.
+    @ObservationIgnored var isForwardingEnabled = true
+
+    /// 본 PC의 수신 앱에 전달할 번역 결과. 형식은 서버의 OVERLAY.md에 있습니다.
+    private struct OverlayMessage: Encodable {
+        let type: String
+        let id: String
+        let speaker: String?
+        let original: String
+        let text: String
+        let direction: String
+    }
 
     private struct Message: Decodable {
         let type: String
@@ -44,6 +56,24 @@ final class CaptionClient {
         socket = nil
         isConnected = false
         status = "서브컴에 연결 안 됨"
+    }
+
+    /// 번역이 끝난 자막을 서브컴으로 보냅니다. 연결되지 않았으면 보내지 않습니다.
+    func send(_ caption: Caption) {
+        guard isConnected, isForwardingEnabled, let socket, let text = caption.translated else { return }
+        let message = OverlayMessage(
+            type: "translation",
+            id: caption.id.uuidString,
+            speaker: caption.speaker,
+            original: caption.original,
+            text: text,
+            direction: caption.direction == .koreanToChinese ? "ko-zh" : "zh-ko"
+        )
+        guard let data = try? JSONEncoder().encode(message),
+              let json = String(data: data, encoding: .utf8)
+        else { return }
+        // 전송에 실패하면 수신 쪽 재연결에 맡기고 넘어갑니다.
+        socket.send(.string(json)) { _ in }
     }
 
     private func run(_ request: URLRequest, _ onCaption: CaptionHandler) async {

@@ -51,6 +51,9 @@ struct FocusCaptionView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        // 자막 보기에 들어올 때와 새 자막이 올 때 화면 꺼짐 방지를 다시 적용합니다.
+        .onAppear { ScreenAwake.enable() }
+        .onChange(of: captions.last?.id) { ScreenAwake.enable() }
     }
 
     @ViewBuilder

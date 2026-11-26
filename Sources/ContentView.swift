@@ -69,11 +69,17 @@ struct ContentView: View {
                 configuration = .init(source: direction.source, target: direction.target)
                 connect() // 저장된 주소가 있으면 바로 연결합니다.
             }
-            // 앱을 보고 있는 동안 화면이 꺼지지 않게 합니다.
-            UIApplication.shared.isIdleTimerDisabled = true
+            // 번역이 끝나면 서브컴으로 보내, 본 PC의 수신 앱이 받을 수 있게 합니다.
+            let sender = client
+            model.onTranslated = { caption in sender.send(caption) }
+            ScreenAwake.enable()
         }
         .onChange(of: scenePhase) { _, phase in
-            UIApplication.shared.isIdleTimerDisabled = (phase == .active)
+            if phase == .active {
+                ScreenAwake.enable()
+            } else {
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
         }
     }
 
@@ -100,6 +106,8 @@ struct ContentView: View {
 
     private func setFocusMode(_ enabled: Bool) {
         isFocusMode = enabled
+        // 본 PC로 보내는 것은 기본 화면에서만 합니다.
+        client.isForwardingEnabled = !enabled
         Orientation.set(enabled ? .landscape : .portrait)
     }
 

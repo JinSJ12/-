@@ -44,6 +44,10 @@ final class CaptionModel {
     @ObservationIgnored
     private var queues: [TranslationDirection: AsyncStream<UUID>.Continuation] = [:]
 
+    /// 번역에 성공할 때마다 호출됩니다.
+    @ObservationIgnored
+    var onTranslated: (@MainActor (Caption) -> Void)?
+
     private let limit = 100
 
     func add(_ text: String, speaker: String? = nil) {
@@ -73,6 +77,9 @@ final class CaptionModel {
                     $0.translated = response.targetText
                     $0.failure = nil
                     $0.seconds = Date().timeIntervalSince(start)
+                }
+                if let done = captions.first(where: { $0.id == id }) {
+                    onTranslated?(done)
                 }
             } catch {
                 if Task.isCancelled { return }

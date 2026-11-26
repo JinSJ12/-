@@ -19,6 +19,16 @@ enum Orientation {
     }
 }
 
+/// 앱을 보고 있는 동안 화면이 자동으로 꺼지지 않게 합니다.
+@MainActor
+enum ScreenAwake {
+    static func enable() {
+        // 이미 켜진 값이면 반영되지 않을 수 있어, 한 번 끄고 다시 켭니다.
+        UIApplication.shared.isIdleTimerDisabled = false
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+}
+
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
