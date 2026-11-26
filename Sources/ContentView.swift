@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var model = CaptionModel()
     @State private var input = ""
     @State private var configuration: TranslationSession.Configuration?
+    @State private var reverseConfiguration: TranslationSession.Configuration?
     @State private var languageStatus = "언어팩 확인 중"
     @State private var client = CaptionClient()
     @State private var showingSettings = false
@@ -14,13 +15,12 @@ struct ContentView: View {
     @AppStorage("serverPassword") private var serverPassword = ""
     @Environment(\.scenePhase) private var scenePhase
 
-    private let source = Locale.Language(identifier: "zh-Hans")
-    private let target = Locale.Language(identifier: "ko")
-
     private let samples = [
         "右边有敌人",
         "等一下，我马上过去",
         "快来帮我",
+        "잠깐만, 바로 갈게",
+        "오른쪽 조심해",
         "撤退！撤退！",
         "打得不错",
     ]
@@ -51,11 +51,22 @@ struct ContentView: View {
             // 언어팩이 없으면 여기서 다운로드 안내가 나타납니다.
             try? await session.prepareTranslation()
             await refreshStatus()
-            await model.translate(with: session)
+            // 다운로드 안내가 겹치지 않게, 한국어 → 중국어는 준비가 끝난 뒤에 시작합니다.
+            if reverseConfiguration == nil {
+                let direction = TranslationDirection.koreanToChinese
+                reverseConfiguration = .init(source: direction.source, target: direction.target)
+            }
+            await model.translate(with: session, direction: .chineseToKorean)
+        }
+        .background {
+            Color.clear.translationTask(reverseConfiguration) { session in
+                await model.translate(with: session, direction: .koreanToChinese)
+            }
         }
         .onAppear {
             if configuration == nil {
-                configuration = .init(source: source, target: target)
+                let direction = TranslationDirection.chineseToKorean
+                configuration = .init(source: direction.source, target: direction.target)
                 connect() // 저장된 주소가 있으면 바로 연결합니다.
             }
             // 앱을 보고 있는 동안 화면이 꺼지지 않게 합니다.
@@ -78,11 +89,11 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
             .padding(.horizontal)
             captionList
-            // 서브컴에 연결되지 않았을 때만 시험용 입력을 보여줍니다.
+            // 예문은 서브컴에 연결되지 않았을 때만 보여줍니다. 입력창은 항상 사용합니다.
             if !client.isConnected {
                 sampleButtons
-                inputRow
             }
+            inputRow
         }
         .padding(.vertical, 8)
     }
@@ -95,7 +106,7 @@ struct ContentView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading) {
-                Text("중국어 → 한국어").font(.headline)
+                Text("중국어 ↔ 한국어").font(.headline)
                 Text(languageStatus).font(.caption).foregroundStyle(.secondary)
                 Text(client.status)
                     .font(.caption)
@@ -105,7 +116,10 @@ struct ContentView: View {
             Button("연결") { showingSettings = true }
                 .buttonStyle(.bordered)
             Menu {
-                Button("번역 다시 시도") { configuration?.invalidate() }
+                Button("번역 다시 시도") {
+                    configuration?.invalidate()
+                    reverseConfiguration?.invalidate()
+                }
                 Button("자막 지우기", role: .destructive) { model.clear() }
             } label: {
                 Image(systemName: "ellipsis.circle").font(.title2)
@@ -153,7 +167,7 @@ struct ContentView: View {
 
     private var inputRow: some View {
         HStack {
-            TextField("중국어 문장 입력", text: $input)
+            TextField("한국어 또는 중국어 입력", text: $input)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit(send)
             Button("번역", action: send)
@@ -173,7 +187,8 @@ struct ContentView: View {
     }
 
     private func refreshStatus() async {
-        switch await LanguageAvailability().status(from: source, to: target) {
+        let direction = TranslationDirection.chineseToKorean
+        switch await LanguageAvailability().status(from: direction.source, to: direction.target) {
         case .installed:
             languageStatus = "언어팩 설치됨 (기기 내 번역 가능)"
         case .supported:
@@ -204,6 +219,16 @@ struct CaptionRow: View {
             if let translated = caption.translated {
                 Text(translated)
                     .font(.system(size: 28, weight: .bold))
+                // 중국어 번역문은 디스코드 채팅에 붙여 넣을 수 있게 복사 버튼을 둡니다.
+                if caption.direction == .koreanToChinese {
+                    Button {
+                        UIPasteboard.general.string = translated
+                    } label: {
+                        Label("중국어 복사", systemImage: "doc.on.doc")
+                    }
+                    .font(.caption)
+                    .buttonStyle(.bordered)
+                }
                 if let seconds = caption.seconds {
                     Text(String(format: "%.2f초", seconds))
                         .font(.caption)

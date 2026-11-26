@@ -21,22 +21,19 @@ struct FocusCaptionView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            GeometryReader { geometry in
-                ZStack(alignment: .bottom) {
-                    currentCaption
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 36) // 내역 손잡이 자리
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ZStack(alignment: .bottom) {
+                currentCaption
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 36) // 내역 손잡이 자리
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // 내역은 평소에 숨어 있고, 열면 자막 위를 덮으며 올라옵니다.
-                    if isHistoryOpen {
-                        historyPanel
-                            .frame(height: geometry.size.height * 0.85)
-                            .transition(.move(edge: .bottom))
-                            .zIndex(1)
-                    } else {
-                        historyHandle
-                    }
+                // 내역은 평소에 숨어 있고, 열면 화면 전체를 덮으며 올라옵니다.
+                if isHistoryOpen {
+                    historyPanel
+                        .transition(.move(edge: .bottom))
+                        .zIndex(1)
+                } else {
+                    historyHandle
                 }
             }
         }
@@ -45,7 +42,7 @@ struct FocusCaptionView: View {
         .overlay(alignment: .top) {
             if showsControls {
                 controls
-            } else if !isConnected {
+            } else if !isConnected && !isHistoryOpen {
                 Text(status)
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -114,10 +111,8 @@ struct FocusCaptionView: View {
             // 열면 최신 자막부터 보여줍니다.
             .defaultScrollAnchor(.bottom)
         }
-        .background(
-            Color(white: 0.12),
-            in: UnevenRoundedRectangle(topLeadingRadius: 16, topTrailingRadius: 16)
-        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { Color(white: 0.12).ignoresSafeArea() }
         .contentShape(Rectangle())
         .onTapGesture {} // 내역 창을 눌러도 메뉴가 열리지 않게 합니다.
     }
