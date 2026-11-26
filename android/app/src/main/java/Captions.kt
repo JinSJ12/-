@@ -19,7 +19,8 @@ enum class Direction(val code: String, val source: String, val target: String) {
     }
 }
 
-class Caption(val original: String, val speaker: String?) {
+/** requestId는 봇이 번역을 돌려받으려고 붙인 번호입니다. */
+class Caption(val original: String, val speaker: String?, val requestId: String? = null) {
     val id: String = UUID.randomUUID().toString()
     val direction = Direction.of(original)
     var translated: String? = null

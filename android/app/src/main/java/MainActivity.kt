@@ -113,10 +113,10 @@ class MainActivity : Activity() {
 
     // ---- 자막 처리 ----
 
-    private fun add(text: String, speaker: String? = null) {
+    private fun add(text: String, speaker: String? = null, requestId: String? = null) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
-        val caption = Caption(trimmed, speaker)
+        val caption = Caption(trimmed, speaker, requestId)
         captions.add(caption)
         while (captions.size > LIMIT) captions.removeAt(0)
         render()
@@ -126,8 +126,8 @@ class MainActivity : Activity() {
     private fun translate(caption: Caption) {
         translator.translate(caption) { done ->
             if (isDestroyed) return@translate
-            // 본 PC로 보내는 것은 기본 화면에서만 합니다.
-            if (!isFocusMode) client.send(done)
+            // 본 PC로 전달하는 것은 기본 화면에서만 합니다.
+            client.send(done, forward = !isFocusMode)
             render()
         }
     }
