@@ -287,10 +287,8 @@ class Paraphraser(
                 }
             }
             AiStyle.TRANSLATION_ONLY -> {
-                val language = if (caption.direction == Direction.ZH_KO) "韩语" else "中文"
                 instructions = null
-                prompt = "将以下文本翻译成$language，使用朋友之间聊天的口语语气，" +
-                    "注意只需要输出翻译后的结果，不要额外解释：\n\n${caption.original}"
+                prompt = translationOnlyPrompt(caption.original, caption.direction)
             }
         }
         val started = System.currentTimeMillis()
@@ -311,7 +309,10 @@ class Paraphraser(
             report(current, "의역 실패: ${e.message}")
             return
         }
-        val result = clean(raw, caption.original, draft, caption.direction) ?: return
+        // 길이를 기본 번역과 비교하는 것은 다듬기 방식에만 합니다.
+        // 직접 번역하는 모델은 기본 번역보다 나은 긴 문장을 낼 수 있습니다.
+        val reference = if (model.style == AiStyle.POLISH) draft else null
+        val result = clean(raw, caption.original, reference, caption.direction) ?: return
         val seconds = (System.currentTimeMillis() - started) / 1000f
         main.post {
             if (current != ticket) return@post
@@ -319,6 +320,29 @@ class Paraphraser(
             caption.refinedSeconds = seconds
             onResult(caption)
         }
+    }
+
+    /**
+     * Hy-MT2 제작사가 안내하는 "맞춤 요청" 형식입니다. 원문과 요구 사항을 나눠 적고,
+     * 마지막 항목에서 번역할 언어를 지정합니다. 중국어 요청문에는 언어 이름도 중국어로 씁니다.
+     */
+    private fun translationOnlyPrompt(source: String, direction: Direction): String {
+        val language = if (direction == Direction.ZH_KO) "韩语" else "中文"
+        val tone = when (direction) {
+            Direction.ZH_KO -> "使用韩国朋友之间聊天的自然口语，用非敬语。"
+            Direction.KO_ZH -> "使用中国朋友之间聊天的自然口语（简体中文），语法要完整，不要漏掉“在”等词。"
+        }
+        val tasks = listOf(
+            "这是游戏语音聊天中的一句话。",
+            "忠实于原文意思，不要增加、删减或猜测内容。",
+            "原文省略主语时，不要随意改变或编造人称。",
+            "疑问句仍译成疑问句，请求和命令保持原来的语气。",
+            tone,
+            "只输出翻译结果，不要额外解释。",
+            "将【待翻译文本】翻译为$language。",
+        )
+        val numbered = tasks.mapIndexed { index, task -> "${index + 1}、$task" }.joinToString("\n")
+        return "【待翻译文本】\n$source\n【翻译任务】\n$numbered"
     }
 
     /** 초벌 번역의 말투만 고치게 하는 지시 (아이폰 앱과 같은 방식) */
@@ -370,7 +394,8 @@ class Paraphraser(
         if (result.isEmpty() || result.length > maxOf(60, source.length * 5)) return null
         // 초벌보다 훨씬 길면 내용을 덧붙인 것으로 보고 버립니다.
         if (draft != null && result.length > maxOf(draft.length * 2, draft.length + 10)) return null
-        if (result.contains("<think>") || result.contains("→")) return null
+        // 요청문을 따라 쓴 출력은 버립니다.
+        if (result.contains("<think>") || result.contains("→") || result.contains("【")) return null
 
         val hasHangul = Direction.of(result) == Direction.KO_ZH
         val hasHan = result.any { it in '一'..'鿿' }
