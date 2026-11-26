@@ -36,9 +36,14 @@ enum AIModel: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 모델마다 번역을 시키는 방법이 다릅니다. draft는 애플 번역입니다.
+    /// 모델마다 번역을 시키는 방법이 다릅니다. draft는 애플 번역, context는 직전에 나온 말입니다.
     /// 요청할 수 없으면 nil.
-    func request(for text: String, draft: String?, direction: TranslationDirection) -> AIRequest? {
+    func request(
+        for text: String,
+        draft: String?,
+        context: [String],
+        direction: TranslationDirection
+    ) -> AIRequest? {
         // 뜻이 바뀌지 않도록 모든 모델에서 매번 같은 답이 나오게(temperature 0) 합니다.
         var parameters = GenerateParameters(maxTokens: 120, temperature: 0)
 
@@ -58,11 +63,9 @@ enum AIModel: String, CaseIterable, Identifiable {
         case .hymt8, .hymt4:
             // 번역 전용 모델은 별도의 지시 없이 한 메시지로 요청합니다.
             parameters.repetitionPenalty = 1.05
-            let language = direction == .chineseToKorean ? "韩语" : "中文"
             return AIRequest(
                 instructions: nil,
-                prompt: "将以下文本翻译成\(language)，使用朋友之间聊天的口语语气，"
-                    + "注意只需要输出翻译后的结果，不要额外解释：\n\n\(text)",
+                prompt: Self.translationTaskPrompt(text, context: context, direction: direction),
                 parameters: parameters,
                 context: nil
             )
@@ -76,6 +79,34 @@ enum AIModel: String, CaseIterable, Identifiable {
                 context: ["source_lang_code": codes.0, "target_lang_code": codes.1]
             )
         }
+    }
+
+    /// Hy-MT2 안내의 "번역할 글 + 번역 요구 목록" 형식입니다.
+    private static func translationTaskPrompt(
+        _ text: String,
+        context: [String],
+        direction: TranslationDirection
+    ) -> String {
+        let language = direction == .chineseToKorean ? "韩语" : "中文"
+        let style = direction == .chineseToKorean
+            ? "使用韩语非敬语（반말），像关系好的朋友聊天一样。句尾不要用“요”或“니다”。"
+            : "使用中国年轻人和朋友聊天时的口语（简体中文），不要用“您”等敬语和书面语。"
+
+        var tasks = [
+            "场景：朋友之间一边玩游戏一边语音聊天。原文来自语音识别。",
+            "风格：\(style)",
+            "忠实原意，不添加也不省略内容；问句保持问句，请求保持请求；保留“在、前、后”等位置信息。",
+        ]
+        if !context.isEmpty {
+            let earlier = context.map { "“\($0)”" }.joined(separator: " ")
+            tasks.append("之前说过的话（只用来理解意思，不要翻译）：\(earlier)")
+        }
+        tasks.append("将【待翻译文本】翻译为\(language)，只输出翻译结果。")
+
+        let numbered = tasks.enumerated()
+            .map { "\($0.offset + 1)、\($0.element)" }
+            .joined(separator: "\n")
+        return "【待翻译文本】\n\(text)\n【翻译任务】\n\(numbered)"
     }
 
     private static func polishInstructions(for direction: TranslationDirection) -> String {
@@ -164,10 +195,12 @@ private actor ModelRunner {
     func generate(
         _ text: String,
         draft: String?,
+        context: [String],
         direction: TranslationDirection
     ) async throws -> String? {
         guard let container, let model,
-              let request = model.request(for: text, draft: draft, direction: direction)
+              let request = model.request(
+                for: text, draft: draft, context: context, direction: direction)
         else { return nil }
         // 문장마다 새 대화를 만들어 이전 문장이 쌓이지 않게 합니다.
         let session = ChatSession(
@@ -200,6 +233,7 @@ final class AIParaphraser {
         let id: UUID
         let text: String
         let draft: String? // 애플 번역
+        let context: [String] // 직전에 나온 말
         let direction: TranslationDirection
     }
 
@@ -268,12 +302,13 @@ final class AIParaphraser {
         if !active { cancelWork() }
     }
 
-    func enqueue(_ caption: Caption) {
+    func enqueue(_ caption: Caption, context: [String]) {
         guard state == .ready, isActive else { return }
         jobs.append(Job(
             id: caption.id,
             text: caption.original,
             draft: caption.translated,
+            context: context,
             direction: caption.direction
         ))
         if jobs.count > Self.maxWaiting {
@@ -300,7 +335,7 @@ final class AIParaphraser {
                 let job = jobs.removeFirst()
                 let start = Date()
                 let raw = try? await runner.generate(
-                    job.text, draft: job.draft, direction: job.direction)
+                    job.text, draft: job.draft, context: job.context, direction: job.direction)
                 if Task.isCancelled { return }
                 if let raw, let result = Self.clean(
                     raw, source: job.text, draft: job.draft, direction: job.direction) {
@@ -343,8 +378,22 @@ final class AIParaphraser {
         let hasHangul = TranslationDirection(of: result) == .koreanToChinese
         let hasHan = result.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }
         switch direction {
-        case .chineseToKorean: return hasHangul && !hasHan ? result : nil
+        case .chineseToKorean: return hasHangul && !hasHan ? casualKorean(result) : nil
         case .koreanToChinese: return hasHan && !hasHangul ? result : nil
         }
+    }
+
+    /// 모델이 "~요" 말투로 답하면 반말로 바꿉니다. "필요", "주세요"처럼 빼면 안 되는 말은
+    /// 건드리지 않도록, 활용 어미가 분명한 경우만 바꿉니다.
+    static func casualKorean(_ text: String) -> String {
+        let end = "(?=[?!.,~…]|$)"
+        return text
+            .replacingOccurrences(of: "이에요" + end, with: "이야", options: .regularExpression)
+            .replacingOccurrences(of: "예요" + end, with: "야", options: .regularExpression)
+            .replacingOccurrences(
+                of: "([아어여해워와져려돼네게데까래나가지줘봐쳐펴켜서때대])요" + end,
+                with: "$1",
+                options: .regularExpression
+            )
     }
 }

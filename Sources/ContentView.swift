@@ -131,7 +131,9 @@ struct ContentView: View {
         let ai = paraphraser
         let captions = model
         captions.prefersApple = prefersApple
-        captions.onDraft = { caption in ai.enqueue(caption) }
+        captions.onDraft = { caption in
+            ai.enqueue(caption, context: captions.context(before: caption.id))
+        }
         ai.onResult = { id, text, seconds in
             captions.setRefined(id, text: text, seconds: seconds)
         }
@@ -183,6 +185,12 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal)
+        // 번역이 되기 시작하면 "다운로드 필요" 표시를 다시 확인합니다.
+        .onChange(of: model.captions.last?.translated) { _, translated in
+            if translated != nil {
+                Task { await refreshStatus() }
+            }
+        }
     }
 
     private func connect() {
