@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var languageStatus = "언어팩 확인 중"
     @State private var client = CaptionClient()
     @State private var showingSettings = false
+    @State private var isFocusMode = false
     @AppStorage("serverAddress") private var serverAddress = ""
     @AppStorage("serverPassword") private var serverPassword = ""
     @Environment(\.scenePhase) private var scenePhase
@@ -25,13 +26,17 @@ struct ContentView: View {
     ]
 
     var body: some View {
-        VStack(spacing: 12) {
-            header
-            captionList
-            // 서브컴에 연결되지 않았을 때만 시험용 입력을 보여줍니다.
-            if !client.isConnected {
-                sampleButtons
-                inputRow
+        // 번역 작업은 바깥 ZStack에 붙여, 화면을 바꿔도 계속 실행되게 합니다.
+        ZStack {
+            if isFocusMode {
+                FocusCaptionView(
+                    captions: model.captions,
+                    status: client.status,
+                    isConnected: client.isConnected,
+                    close: { setFocusMode(false) }
+                )
+            } else {
+                mainScreen
             }
         }
         .sheet(isPresented: $showingSettings) {
@@ -42,7 +47,6 @@ struct ContentView: View {
                 disconnect: { client.disconnect() }
             )
         }
-        .padding(.vertical, 8)
         .translationTask(configuration) { session in
             // 언어팩이 없으면 여기서 다운로드 안내가 나타납니다.
             try? await session.prepareTranslation()
@@ -60,6 +64,32 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             UIApplication.shared.isIdleTimerDisabled = (phase == .active)
         }
+    }
+
+    private var mainScreen: some View {
+        VStack(spacing: 12) {
+            header
+            Button {
+                setFocusMode(true)
+            } label: {
+                Label("자막 보기 모드", systemImage: "rectangle.landscape.rotate")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.horizontal)
+            captionList
+            // 서브컴에 연결되지 않았을 때만 시험용 입력을 보여줍니다.
+            if !client.isConnected {
+                sampleButtons
+                inputRow
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func setFocusMode(_ enabled: Bool) {
+        isFocusMode = enabled
+        Orientation.set(enabled ? .landscape : .portrait)
     }
 
     private var header: some View {
@@ -102,6 +132,8 @@ struct ContentView: View {
                 .padding(.horizontal)
             }
             .scrollDismissesKeyboard(.interactively)
+            // 자막 보기에서 돌아오면 최신 자막부터 보여줍니다.
+            .onAppear { scrollToBottom(proxy) }
             .onChange(of: model.captions.last?.id) { scrollToBottom(proxy) }
             .onChange(of: model.captions.last?.translated) { scrollToBottom(proxy) }
         }
@@ -162,7 +194,7 @@ struct CaptionRow: View {
             if let speaker = caption.speaker {
                 Text(speaker)
                     .font(.headline)
-                    .foregroundStyle(color(for: speaker))
+                    .foregroundStyle(speakerColor(speaker))
             }
 
             Text(caption.original)
@@ -185,13 +217,13 @@ struct CaptionRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
 
-    /// 같은 사람은 항상 같은 색으로 표시합니다.
-    private func color(for speaker: String) -> Color {
-        let palette: [Color] = [.cyan, .green, .orange, .pink, .yellow]
-        let sum = speaker.unicodeScalars.reduce(0) { $0 + Int($1.value) }
-        return palette[sum % palette.count]
-    }
+/// 같은 사람은 항상 같은 색으로 표시합니다.
+func speakerColor(_ speaker: String) -> Color {
+    let palette: [Color] = [.cyan, .green, .orange, .pink, .yellow]
+    let sum = speaker.unicodeScalars.reduce(0) { $0 + Int($1.value) }
+    return palette[sum % palette.count]
 }
 
 struct ConnectionSettings: View {
