@@ -64,9 +64,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(
             for: UIApplication.didReceiveMemoryWarningNotification)
         ) { _ in
-            guard isAIEnabled else { return }
-            isAIEnabled = false
-            paraphraser.stop(reason: "메모리가 부족해 AI 의역을 껐습니다")
+            // 메모리가 부족해도 AI를 끄지 않고, 임시 메모리만 비워 계속 씁니다.
+            // 그래도 앱이 종료되면 다시 열 때 AI가 자동으로 켜집니다.
+            if isAIEnabled { AIMemory.refresh() }
         }
         .translationTask(configuration) { session in
             // 언어팩이 없으면 여기서 다운로드 안내가 나타납니다.
